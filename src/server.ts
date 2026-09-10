@@ -31,6 +31,7 @@ import { isValidPage } from "./schema.js";
 import { vibecode, VibecodeError } from "./anthropic.js";
 import { logSettledPayment } from "./audit.js";
 import { forwardTreasuryShare } from "./treasury.js";
+import { mockVibecodeEdit } from "./mock.js";
 import {
   FACILITATOR_URL,
   FEE_PAYER_ACCOUNT,
@@ -181,6 +182,18 @@ app.post("/vibecode", async (req, res) => {
   }
 
   // --- The expensive part: call the AI. Runs only after on-chain settlement.
+  // $0 path: with no ANTHROPIC_API_KEY configured, apply the deterministic
+  // mock edit instead of failing AFTER the buyer paid. The response is
+  // clearly labeled so nobody mistakes it for a real AI edit.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log("[vibecode] no ANTHROPIC_API_KEY — serving labeled mock edit ($0 mode)");
+    res.json({
+      pageJson: mockVibecodeEdit(pageJson, instruction),
+      mock: true,
+      note: "Mock edit: set ANTHROPIC_API_KEY for real AI vibecoding.",
+    });
+    return;
+  }
   try {
     const updated = await vibecode(pageJson, instruction);
     res.json({ pageJson: updated });

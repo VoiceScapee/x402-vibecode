@@ -11,7 +11,7 @@
  * Forwarding is best-effort by design — like the audit feed, it can never
  * break a paid request. Env:
  *   SELLER_ACCOUNT_ID   operator account (also the x402 payTo)
- *   SELLER_PRIVATE_KEY  ECDSA key for the operator (forwards the 2%)
+ *   SELLER_PRIVATE_KEY  operator private key, any key type (forwards the 2%)
  *   TREASURY_ACCOUNT_ID Voicescape treasury (receives the 2%)
  *
  * TESTNET ONLY. Nothing here touches mainnet.
@@ -43,7 +43,7 @@ function operatorClient(): Client | null {
   const operatorKey = process.env.SELLER_PRIVATE_KEY;
   if (!operatorId || !operatorKey) return null;
   const client = Client.forTestnet();
-  client.setOperator(operatorId, PrivateKey.fromStringECDSA(operatorKey));
+  client.setOperator(operatorId, PrivateKey.fromString(operatorKey));
   return client;
 }
 

@@ -43,7 +43,7 @@ function auditClient(): Client | null {
   const operatorKey = process.env.AUDIT_OPERATOR_KEY;
   if (!operatorId || !operatorKey) return null;
   const client = Client.forTestnet();
-  client.setOperator(operatorId, PrivateKey.fromStringECDSA(operatorKey));
+  client.setOperator(operatorId, PrivateKey.fromString(operatorKey));
   return client;
 }
 
@@ -88,10 +88,10 @@ export async function createAuditTopic(): Promise<string> {
   const operatorId = process.env.AUDIT_OPERATOR_ID;
   const operatorKey = process.env.AUDIT_OPERATOR_KEY;
   if (!operatorId || !operatorKey) {
-    throw new Error("Set AUDIT_OPERATOR_ID and AUDIT_OPERATOR_KEY (ECDSA testnet account) first.");
+    throw new Error("Set AUDIT_OPERATOR_ID and AUDIT_OPERATOR_KEY (any testnet key type) first.");
   }
   const client = Client.forTestnet();
-  client.setOperator(operatorId, PrivateKey.fromStringECDSA(operatorKey));
+  client.setOperator(operatorId, PrivateKey.fromString(operatorKey));
   const tx = await new TopicCreateTransaction()
     .setTopicMemo("Vibecode x402 — settled payment audit feed (ETHOnline 2026)")
     .execute(client);

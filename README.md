@@ -103,7 +103,7 @@ npm run typecheck
 ### 5. HCS audit feed (optional)
 
 ```bash
-npm run audit:init   # needs AUDIT_OPERATOR_ID/KEY (testnet ECDSA account)
+npm run audit:init   # needs AUDIT_OPERATOR_ID/KEY (any testnet key type)
 # put the printed topic id in .env as HCS_TOPIC_ID, restart the server
 ```
 
@@ -128,7 +128,7 @@ on-chain to the treasury (`src/treasury.ts`):
 ```bash
 # in .env
 TREASURY_ACCOUNT_ID=0.0.345678   # Voicescape treasury (receives the 2%)
-SELLER_PRIVATE_KEY=<ECDSA key>    # operator key, forwards the 2% after each settlement
+SELLER_PRIVATE_KEY=<key>         # operator private key (any key type), forwards the 2% after each settlement
 ```
 
 At the default price (5,000,000 tinybars): operator keeps 4,900,000,
@@ -166,7 +166,7 @@ and the result is re-validated before returning.
 | `HCS_TOPIC_ID` | no | Audit topic (see above) |
 | `AUDIT_OPERATOR_ID` / `AUDIT_OPERATOR_KEY` | no | Credentials that submit audit messages |
 | `TREASURY_ACCOUNT_ID` | no | Voicescape treasury; enables the on-chain 98/2 split (see §6) |
-| `SELLER_PRIVATE_KEY` | no (yes with treasury) | Operator ECDSA key; forwards the 2% treasury share after settlement |
+| `SELLER_PRIVATE_KEY` | no (yes with treasury) | Operator private key (any key type); forwards the 2% treasury share after settlement |
 
 ## Bounty-track fit
 
@@ -191,8 +191,11 @@ this project is exactly that, end to end:
 ## Notes & limitations
 
 - **Testnet only.** No mainnet code paths exist.
-- The Anthropic call and the live Blocky402 round-trip can't be verified
-  without keys — the dry-run/mock paths cover everything else (`npm test`).
+- **$0 mode:** with no `ANTHROPIC_API_KEY`, the live server serves a clearly
+  labeled mock edit (`{ mock: true }`) instead of failing after the buyer
+  paid — the full x402 payment flow works end to end without spending anything.
+- The live Blocky402 round-trip can't be verified without keys — the
+  dry-run/mock paths cover everything else (`npm test`).
 - `upfront` flow: payment settles before the AI runs. If the AI then errors,
   the buyer gets a clear 502 (the payment is not refunded) — documented
   trade-off of pay-per-compute.
