@@ -1,0 +1,34 @@
+{
+  "dependencies": {
+    "@hashgraph/sdk": "2.81.0",
+    "@x402/core": "2.25.0",
+    "@x402/express": "2.25.0",
+    "@x402/fetch": "2.25.0",
+    "@x402/hedera": "2.25.0",
+    "dotenv": "16.4.5",
+    "express": "4.19.2"
+  },
+  "description": "Pay-per-request AI vibecode API using x402 on Hedera testnet (ETHOnline 2026 \u2014 Hedera x402 agentic payments track)",
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/node": "20.14.0",
+    "tsx": "4.20.5",
+    "typescript": "5.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/server.js",
+  "name": "x402-vibecode",
+  "scripts": {
+    "build": "tsc",
+    "demo": "npx tsx src/buyer-demo.ts",
+    "dev": "npx tsx src/server.ts",
+    "start": "node dist/server.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "audit:init": "npx tsx src/audit-init.ts"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
