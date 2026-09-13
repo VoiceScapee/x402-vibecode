@@ -32,6 +32,10 @@ import { vibecode, VibecodeError } from "./anthropic.js";
 import { buildAuditEntry, logSettledPayment } from "./audit.js";
 import { forwardTreasuryShare } from "./treasury.js";
 import { hederaNetworkId, hederaNetworkName } from "./network.js";
+import {
+  buildAgentCard,
+  registerAgentCardRoutes,
+} from "./agent-card.js";
 import { getActiveRate, refreshPriceFeed, startPriceFeed } from "./price.js";
 import { getMaxStalenessMs, isHbarRateStale } from "./price.js";
 import { enforceStartupPriceFloor } from "./economics.js";
@@ -199,6 +203,16 @@ app.use((req, res, next) => {
   }
   paymentMw(req, res, next);
 });
+
+// Machine-readable discovery: A2A agent card (a2a-x402 payment extension)
+// at the A2A 1.0 well-known URI + a compat alias. Built per-request from
+// live config so prices/rails always match the 402.
+registerAgentCardRoutes(app, () =>
+  buildAgentCard({
+    publicUrl: PUBLIC_URL,
+    includeHbarRail: hbarRailAvailable(),
+  }),
+);
 
 app.get("/", (_req, res) => {
   // The 402 is the authority on which rails accept payment; this listing
