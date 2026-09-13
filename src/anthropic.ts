@@ -29,7 +29,7 @@ The JSON must match this schema exactly:
     { "type": "links", "items": [ { "label": "string", "url": "string" } ] },
     { "type": "tipJar", "message": "string (optional)" },
     { "type": "guestbook", "entries": [ { "name": "string", "message": "string", "date": "YYYY-MM-DD string" } ] },
-    { "type": "music", "title": "string (optional)", "note": "string (optional)" },
+    { "type": "music", "title": "string (optional)", "tracks": [ { "source": "spotify|youtube|soundcloud|ipfs", "id": "embed ID or IPFS CID", "kind": "track|album|playlist|episode|video (optional)", "url": "original URL (optional)", "title": "string (optional)", "artist": "string (optional)" } ], "note": "string (optional, legacy)" },
     { "type": "gallery", "images": ["emoji strings as placeholders"] }
   ]
 }
@@ -37,14 +37,15 @@ The JSON must match this schema exactly:
 Rules:
 - "version" must be 1. "type" must be one of: hero, bio, links, tipJar, guestbook, music, gallery.
 - Apply ONLY the change the user asked for; preserve everything else from the current page JSON.
-- For "music" and "gallery" blocks use emoji placeholders only — never real URLs or embeds.
+- For "gallery" blocks use emoji placeholders only — never real URLs or embeds.
+- "music" blocks use real tracks: "source" is one of spotify|youtube|soundcloud|ipfs, "id" is the platform embed ID (or IPFS CID for the owner's own upload). Never invent track IDs — only use links the user provided.
 - Never invent usernames, real people, or external URLs beyond what the user provided.
 - Keep text concise and in the spirit of the request.`;
 
 export { VIBECODE_SYSTEM_PROMPT };
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+export const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 
 export class VibecodeError extends Error {}
 

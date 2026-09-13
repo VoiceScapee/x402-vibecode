@@ -1,0 +1,96 @@
+# render.yaml — Render Blueprint for the Voicescape x402 vibecode service.
+#
+# Deploy: Render Dashboard → New → Blueprint → connect the repo that holds
+# this directory (~/workspace/x402-vibecode) → Apply.
+# Secrets (sync: false) are left empty on purpose: fill them in under the
+# service's "Environment" tab after the blueprint applies. They are NEVER
+# committed here.
+#
+# Free-tier behavior: sleeps after ~15 min of inactivity, ~30–60s cold start
+# on the first request after sleep. See DEPLOY_FREE.md for the free
+# UptimeRobot keepalive that avoids the cold start.
+services:
+  - type: web
+    name: voicescape-x402-vibecode
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build # tsc → dist/server.js
+    startCommand: npm start # node dist/server.js (main entry)
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ---- plain config (no secrets) ----
+      - key: NODE_ENV
+        value: production
+      - key: HEDERA_NETWORK
+        value: mainnet
+      - key: PUBLIC_URL
+        # Update if you rename the service. The 402 advertises this URL and
+        # the handler re-checks buyer payloads against it (replay hygiene).
+        value: https://voicescape-x402-vibecode.onrender.com
+      - key: PRICE_USD_CENTS
+        value: "25" # must be >= the startup price floor (computed ~20¢ at sonnet defaults incl. 1.5x AI margin + operator overhead); boot REFUSES to start below it in real-AI mode
+      - key: HBAR_USD_PRICE
+        value: "0.20" # fallback only: the server prefers the live CoinGecko feed (10-min cache); this is used when the API is unreachable
+      # Fail-closed staleness bound: if the live CoinGecko feed has not
+      # confirmed a rate for longer than this, the HBAR rail is SUSPENDED
+      # (the 402 advertises USDC only) — pricing tinybars at an ancient
+      # fallback rate during an outage could collect less USD value than the
+      # quote while the Anthropic cost stays in USD. USDC pricing is
+      # USD-exact, so the service keeps earning safely. The rail resumes
+      # automatically when the live feed recovers.
+      - key: PRICE_MAX_STALENESS_MS
+        value: "3600000" # 1 hour without a live rate -> HBAR rail suspends
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-5-20250929
+      # ---- economics (the platform never loses money — see README) ----
+      # Startup price floor: worst-case AI cost × 1.5 margin + operator
+      # overhead, all from these vars. The server REFUSES TO BOOT when
+      # PRICE_USD_CENTS is below the computed floor (real AI mode only;
+      # mock mode skips it). At defaults the floor is ~20¢ — the legacy 1¢
+      # default below will not boot with ANTHROPIC_API_KEY set. Raise
+      # PRICE_USD_CENTS (or pick a cheaper model) before going live.
+      - key: MAX_INPUT_TOKENS
+        value: "20000" # worst-case input tokens per request (system prompt ~4k + pageJson + instruction)
+      - key: MAX_OUTPUT_TOKENS
+        value: "4096" # worst-case output tokens (matches the max_tokens param)
+      - key: OPERATOR_OVERHEAD_TINYBARS
+        value: "1000000" # 0.01 HBAR per request: settle tx + treasury-forward tx + HCS audit tx fees
+      # Treasury forward skip: a 2% share worth less than 2x this fee budget
+      # is never forwarded (reason "below-forward-fee") — never pay a chain
+      # fee to collect dust. 0 disables the skip.
+      - key: FORWARD_FEE_TINYBARS
+        value: "500000" # ≈$0.001 at $0.20/HBAR
+      # Optional: explicit per-MTok rates (USD) for an unknown ANTHROPIC_MODEL.
+      # Set BOTH or neither; they override the built-in sonnet/haiku table.
+      # - key: ANTHROPIC_INPUT_USD_PER_MTOK
+      #   value: "3"
+      # - key: ANTHROPIC_OUTPUT_USD_PER_MTOK
+      #   value: "15"
+      # ---- secrets: fill in via the Render dashboard (Environment tab) ----
+      - key: ANTHROPIC_API_KEY
+        sync: false # required for real AI output; server boots without it (mock mode)
+      - key: SELLER_ACCOUNT_ID
+        sync: false # e.g. 0.0.x — receives the settled x402 payments
+      - key: SELLER_PRIVATE_KEY
+        sync: false # operator key — signs the 2% treasury forward on-chain
+      - key: TREASURY_ACCOUNT_ID
+        sync: false # optional; when empty the 2% forward is skipped
+      # ---- facilitator: REQUIRED on mainnet (no default — the server refuses
+      # to boot without these, so real payments can never silently settle
+      # through the wrong network's facilitator)
+      # DECISION ($0): point at OUR OWN self-hosted facilitator on Vercel Hobby
+      # (see FACILITATOR_SHORTLIST.md + DEPLOY_FREE.md Part C). Testnet keeps
+      # the Blocky402 default; Blocky402 mainnet is fallback-only. ----
+      - key: FACILITATOR_URL
+        sync: false # e.g. https://voicescape-facilitator.vercel.app (your Vercel facilitator deploy); testnet defaults to Blocky402
+      - key: FEE_PAYER_ACCOUNT
+        sync: false # MUST be the self-hosted facilitator's HEDERA_FACILITATOR_ID (same account); e.g. 0.0.x
+      - key: FACILITATOR_API_KEY
+        sync: false # LEAVE EMPTY for the self-hosted facilitator (no key needed). Only set for Blocky402 mainnet fallback.
+      - key: HCS_TOPIC_ID
+        sync: false # optional; when empty no audit messages are written
+      - key: AUDIT_OPERATOR_ID
+        sync: false # optional; account that submits audit messages to the topic
+      - key: AUDIT_OPERATOR_KEY
+        sync: false # optional; its private key

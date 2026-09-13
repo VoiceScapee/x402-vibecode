@@ -22,12 +22,16 @@ import type { AfterSettleHook } from "@x402/core/server";
 import { ExactHederaScheme as ExactHederaServerScheme } from "@x402/hedera/exact/server";
 import { isValidPage, VoicescapePage } from "./schema.js";
 import { forwardTreasuryShare } from "./treasury.js";
+import { hederaNetworkId } from "./network.js";
 import {
-  FACILITATOR_URL,
-  FEE_PAYER_ACCOUNT,
-  HEDERA_TESTNET_NETWORK,
-  PRICE_TINYBARS,
+  getFacilitatorUrl,
+  getFeePayerAccount,
+  HBAR_ASSET_ID,
   buildVibecodeRouteConfig,
+  getPriceUsdCents,
+  priceTinybars,
+  priceUsdcBaseUnits,
+  usdcAssetIdForNetwork,
 } from "./payment.js";
 
 export const MOCK_FACILITATOR_PORT = 4101;
@@ -56,7 +60,7 @@ function startMockFacilitator(): Promise<import("http").Server> {
 
   app.get("/supported", (_req, res) => {
     res.json({
-      kinds: [{ x402Version: 2, scheme: "exact", network: HEDERA_TESTNET_NETWORK }],
+      kinds: [{ x402Version: 2, scheme: "exact", network: hederaNetworkId() }],
       extensions: [],
       signers: {},
     });
@@ -69,15 +73,15 @@ function startMockFacilitator(): Promise<import("http").Server> {
   });
 
   app.post("/settle", (req, res) => {
-    const body = req.body as { paymentPayload?: { accepted?: { payTo?: string; amount?: string } } };
+    const body = req.body as { paymentPayload?: { accepted?: { payTo?: string; amount?: string; asset?: string } } };
     const accepted = body.paymentPayload?.accepted;
     console.log(
-      `[mock-facilitator] settle: ${accepted?.amount} tinybars -> ${accepted?.payTo} (no chain tx in dry-run)`,
+      `[mock-facilitator] settle: ${accepted?.amount} base units of asset ${accepted?.asset} -> ${accepted?.payTo} (no chain tx in dry-run)`,
     );
     res.json({
       success: true,
       transaction: "0.0.9999@1234567890.000000001-mock",
-      network: HEDERA_TESTNET_NETWORK,
+      network: hederaNetworkId(),
       payer: MOCK_BUYER,
     });
   });
@@ -93,16 +97,18 @@ function startMockFacilitator(): Promise<import("http").Server> {
 function startMockResourceServer(): Promise<import("http").Server> {
   const facilitator = new HTTPFacilitatorClient({ url: MOCK_FACILITATOR_URL });
   const resourceServer = new x402ResourceServer(facilitator).register(
-    HEDERA_TESTNET_NETWORK,
+    hederaNetworkId(),
     new ExactHederaServerScheme(),
   );
 
   // Mirror the real server's economics: after (mock) settlement, simulate
-  // the 2% treasury forward so the dry-run exercises the split logic too.
+  // the 2% treasury forward so the dry-run exercises the split logic too —
+  // in the asset the buyer actually paid.
   const mockEconomicsHook: AfterSettleHook = async (ctx) => {
     if (!ctx.result.success) return;
     await forwardTreasuryShare({
-      amountTinybars: ctx.requirements.amount,
+      amount: ctx.requirements.amount,
+      asset: ctx.requirements.asset,
       sourceTxId: ctx.result.transaction,
       treasuryAccountId: MOCK_TREASURY,
       dryRun: true,
@@ -110,7 +116,11 @@ function startMockResourceServer(): Promise<import("http").Server> {
   };
   resourceServer.onAfterSettle(mockEconomicsHook);
 
-  const routeConfig = buildVibecodeRouteConfig(MOCK_SELLER);
+  const routeConfig = buildVibecodeRouteConfig(MOCK_SELLER, {
+    // Dry-run: no real funds move, so the stale-rate fail-closed rule does
+    // not apply — keep both rails so the demo exercises HBAR and USDC.
+    includeHbarRail: true,
+  });
   routeConfig.resource = `${MOCK_RESOURCE_URL}/vibecode`;
   routeConfig.description = "[MOCK] Vibecode vibecode endpoint (dry-run)";
 
@@ -122,12 +132,20 @@ function startMockResourceServer(): Promise<import("http").Server> {
     res.json({
       service: "Vibecode x402",
       description: "[MOCK] Pay-per-request AI page builder (dry-run).",
-      network: HEDERA_TESTNET_NETWORK,
-      price: { tinybars: PRICE_TINYBARS, hbar: "0.05", note: "mock" },
-      asset: "0.0.0",
+      network: hederaNetworkId(),
+      price: {
+        usdCents: getPriceUsdCents().toString(),
+        hbar: { tinybars: priceTinybars() },
+        usdc: {
+          baseUnits: priceUsdcBaseUnits(),
+          tokenId: usdcAssetIdForNetwork(hederaNetworkId()),
+        },
+        note: "mock",
+      },
+      assets: [HBAR_ASSET_ID, usdcAssetIdForNetwork(hederaNetworkId())],
       payTo: MOCK_SELLER,
       facilitator: MOCK_FACILITATOR_URL,
-      feePayer: FEE_PAYER_ACCOUNT,
+      feePayer: getFeePayerAccount(),
       endpoint: "POST /vibecode",
       mock: true,
     });
@@ -179,8 +197,10 @@ export function mockStackInfo() {
   return {
     facilitatorUrl: MOCK_FACILITATOR_URL,
     resourceUrl: MOCK_RESOURCE_URL,
-    realFacilitator: FACILITATOR_URL,
-    feePayer: FEE_PAYER_ACCOUNT,
-    priceTinybars: PRICE_TINYBARS,
+    realFacilitator: getFacilitatorUrl(),
+    feePayer: getFeePayerAccount(),
+    priceUsdCents: getPriceUsdCents().toString(),
+    priceTinybars: priceTinybars(),
+    priceUsdcBaseUnits: priceUsdcBaseUnits(),
   };
 }

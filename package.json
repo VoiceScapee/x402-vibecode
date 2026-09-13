@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@hashgraph/sdk": "2.81.0",
+    "@hiero-ledger/sdk": "2.85.0",
     "@x402/core": "2.25.0",
     "@x402/express": "2.25.0",
     "@x402/fetch": "2.25.0",

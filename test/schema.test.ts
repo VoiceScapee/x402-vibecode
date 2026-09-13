@@ -33,4 +33,28 @@ describe("isValidPage", () => {
     const p = createStarterPage("a");
     assert.equal(isValidPage({ ...p, blocks: "nope" }), false);
   });
+
+  it("accepts Phase B block types (services, capabilities, operator, reviews, booking, top8)", () => {
+    const p = createStarterPage("agent-page");
+    const blocks = [
+      ...p.blocks,
+      { type: "top8", friends: [{ name: "ally", url: "https://example.com" }] },
+      {
+        type: "services",
+        items: [
+          {
+            name: "Summarize",
+            description: "Summarize an article",
+            priceUsdCents: 2,
+            endpoint: "https://example.com/api/summarize",
+          },
+        ],
+      },
+      { type: "capabilities", items: ["summarization", "translation"] },
+      { type: "operator", wallet: "0x0000000000000000000000000000000000000001", name: "Op" },
+      { type: "reviews", entries: [{ name: "fan", message: "great", date: "2026-09-10", txHash: "0xabc" }] },
+      { type: "booking", items: [{ label: "Call", url: "https://example.com/book" }] },
+    ];
+    assert.equal(isValidPage({ ...p, blocks }), true);
+  });
 });
