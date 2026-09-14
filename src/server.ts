@@ -28,7 +28,7 @@ import type { AfterSettleHook } from "@x402/core/server";
 import { ExactHederaScheme as ExactHederaServerScheme } from "@x402/hedera/exact/server";
 
 import { isValidPage } from "./schema.js";
-import { vibecode, VibecodeError } from "./anthropic.js";
+import { vibecode, VibecodeError, reviewCopy, CopyReviewError } from "./anthropic.js";
 import { buildAuditEntry, logSettledPayment } from "./audit.js";
 import { forwardTreasuryShare } from "./treasury.js";
 import { hederaNetworkId, hederaNetworkName } from "./network.js";
@@ -41,8 +41,10 @@ import { getMaxStalenessMs, isHbarRateStale } from "./price.js";
 import { enforceStartupPriceFloor } from "./economics.js";
 import {
   HBAR_ASSET_ID,
+  buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
   decodePaymentRequiredHeader,
+  getCopyReviewSellerAccountId,
   getFacilitatorApiKey,
   getFacilitatorUrl,
   getFeePayerAccount,
@@ -62,6 +64,7 @@ const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL =
   process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const VIBECODE_RESOURCE_URL = `${PUBLIC_URL}/vibecode`;
+const COPY_REVIEW_RESOURCE_URL = `${PUBLIC_URL}/copy-review`;
 
 // The Hedera network is validated LOUDLY at startup (throws on garbage,
 // never silently falls back) and logged so a log tail always shows where
@@ -70,6 +73,13 @@ const NETWORK_NAME = hederaNetworkName(); // fails fast on invalid HEDERA_NETWOR
 const NETWORK = hederaNetworkId();
 
 const sellerAccountId = getSellerAccountId(); // fails fast if unset
+// Danny's (liaison agent's) wallet — receives /copy-review payments.
+// Fail-fast: never silently route danny's revenue to the vibecode seller.
+const copyReviewSellerAccountId = getCopyReviewSellerAccountId();
+// Hot key for danny's 2% treasury forwards. Optional at boot: without it
+// the forward is skipped (reason "operator-key-missing") and danny keeps
+// the full payment — best-effort, never breaks a paid request.
+const copyReviewSellerPrivateKey = process.env.COPY_REVIEW_SELLER_PRIVATE_KEY?.trim() || null;
 
 // ---------------------------------------------------------------------------
 // x402 wiring
@@ -104,10 +114,24 @@ const resourceServer = new x402ResourceServer(facilitator).register(
 // paid request.
 const auditHook: AfterSettleHook = async (ctx) => {
   if (!ctx.result.success) return;
+  // Which endpoint was paid? The payload commits to the 402's resource URL.
+  const resourceUrl =
+    (ctx.paymentPayload as { resource?: { url?: unknown } }).resource?.url;
+  const isCopyReview = typeof resourceUrl === "string" && resourceUrl.endsWith("/copy-review");
+  const endpoint = isCopyReview ? "/copy-review" : "/vibecode";
   const treasury = await forwardTreasuryShare({
     amount: ctx.requirements.amount,
     asset: ctx.requirements.asset,
     sourceTxId: ctx.result.transaction,
+    endpointLabel: isCopyReview ? "copy-review" : "vibecode",
+    // The 2% forward is signed by whoever received the settled payment:
+    // danny's key for /copy-review, the SELLER_* env pair for /vibecode.
+    ...(isCopyReview
+      ? {
+          operatorAccountId: copyReviewSellerAccountId,
+          operatorPrivateKey: copyReviewSellerPrivateKey,
+        }
+      : {}),
   });
   await logSettledPayment(
     buildAuditEntry({
@@ -117,7 +141,7 @@ const auditHook: AfterSettleHook = async (ctx) => {
       amountBaseUnits: ctx.requirements.amount,
       asset: ctx.requirements.asset,
       network: ctx.requirements.network,
-      endpoint: "/vibecode",
+      endpoint,
       facilitator: FACILITATOR_URL,
       forward: treasury,
       treasuryAccountId: process.env.TREASURY_ACCOUNT_ID ?? null,
@@ -160,16 +184,31 @@ let routeConfig = buildVibecodeRouteConfig(sellerAccountId, {
 });
 routeConfig.resource = VIBECODE_RESOURCE_URL;
 
+let copyReviewRouteConfig = buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
+  includeHbarRail: hbarRailAvailable(),
+});
+copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
+
 // The payment middleware is rebuilt whenever the price feed refreshes so
 // the 402 always advertises a fresh HBAR-rail price; a delegating wrapper
 // lets the swap happen without restarting the server.
-let paymentMw = paymentMiddleware({ "POST /vibecode": routeConfig }, resourceServer);
+let paymentMw = paymentMiddleware(
+  { "POST /vibecode": routeConfig, "POST /copy-review": copyReviewRouteConfig },
+  resourceServer,
+);
 function rebuildPayments(): void {
   routeConfig = buildVibecodeRouteConfig(sellerAccountId, {
     includeHbarRail: hbarRailAvailable(),
   });
   routeConfig.resource = VIBECODE_RESOURCE_URL;
-  paymentMw = paymentMiddleware({ "POST /vibecode": routeConfig }, resourceServer);
+  copyReviewRouteConfig = buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
+    includeHbarRail: hbarRailAvailable(),
+  });
+  copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
+  paymentMw = paymentMiddleware(
+    { "POST /vibecode": routeConfig, "POST /copy-review": copyReviewRouteConfig },
+    resourceServer,
+  );
   const rate = getActiveRate();
   console.log(
     `[payments] 402 rebuilt: ${priceTinybars()} tinybars (HBAR/USD $${rate.usd}, source=${rate.source})`,
@@ -182,9 +221,11 @@ startPriceFeed({ onRefresh: () => rebuildPayments() });
 // ---------------------------------------------------------------------------
 
 // Fail closed: without an AI backend there is nothing real to deliver, so
-// /vibecode must never demand or settle a payment. (The mock server in
-// mock.ts is the only place mock edits are served — a localhost dry-run.)
+// the paid endpoints must never demand or settle a payment. (The mock
+// server in mock.ts is the only place mock edits/reviews are served — a
+// localhost dry-run.)
 const AI_BACKEND_ENABLED = Boolean(process.env.ANTHROPIC_API_KEY);
+const AI_PAID_ROUTES = new Set(["POST /vibecode", "POST /copy-review"]);
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
@@ -193,7 +234,7 @@ app.use(express.json({ limit: "256kb" }));
 // everything else (/, /health) passes through untouched. The wrapper
 // indirection is what allows hot-swapping the middleware on price refresh.
 app.use((req, res, next) => {
-  if (!AI_BACKEND_ENABLED && req.method === "POST" && req.path === "/vibecode") {
+  if (!AI_BACKEND_ENABLED && AI_PAID_ROUTES.has(`${req.method} ${req.path}`)) {
     // No 402, no settlement: serving a mock behind a paywall is forbidden.
     res.status(503).json({
       error:
@@ -222,7 +263,7 @@ app.get("/", (_req, res) => {
   res.json({
     service: "Vibecode x402",
     description:
-      "Pay-per-request AI page builder for Voicescape. POST { pageJson, instruction } to /vibecode and get back the AI-edited page JSON. No API keys, no accounts — just an x402 payment per request on the HBAR or USDC rail.",
+      "Pay-per-request AI services for Voicescape blockpages. POST { pageJson, instruction } to /vibecode for an AI page edit; POST { pageJson, focus? } to /copy-review for danny the liaison agent's structured copy review. No API keys, no accounts — just an x402 payment per request on the HBAR or USDC rail.",
     network: NETWORK,
     buyerKeyType:
       "ECDSA (secp256k1) — the x402 buyer tooling does not accept ED25519 keys. See examples/agent-client/README.md for the HashPack workaround.",
@@ -241,9 +282,10 @@ app.get("/", (_req, res) => {
     },
     assets: hbarRail ? [HBAR_ASSET_ID, usdcAssetIdForNetwork(NETWORK)] : [usdcAssetIdForNetwork(NETWORK)],
     payTo: sellerAccountId,
+    copyReviewPayTo: copyReviewSellerAccountId,
     facilitator: FACILITATOR_URL,
     feePayer: FEE_PAYER_ACCOUNT,
-    endpoint: "POST /vibecode",
+    endpoints: ["POST /vibecode", "POST /copy-review"],
     auditTopic: process.env.HCS_TOPIC_ID || "(not configured)",
     docs: "See README.md for the full handshake walkthrough.",
   });
@@ -334,12 +376,79 @@ app.post("/vibecode", async (req, res) => {
   }
 });
 
+app.post("/copy-review", async (req, res) => {
+  // --- Replay hygiene: the payment payload commits to a resource URL.
+  // Only honor payments that were minted for THIS endpoint.
+  const sigHeader = req.header("PAYMENT-SIGNATURE");
+  if (!sigHeader) {
+    // Should be unreachable (middleware rejects unpaid requests), but stay safe.
+    res.status(402).json({ error: "Payment required (PAYMENT-SIGNATURE missing)." });
+    return;
+  }
+  let declaredResource: unknown = null;
+  try {
+    declaredResource = decodePaymentRequiredHeader(sigHeader);
+  } catch {
+    res.status(400).json({ error: "Could not decode PAYMENT-SIGNATURE header." });
+    return;
+  }
+  if (!paymentResourceMatches(declaredResource, COPY_REVIEW_RESOURCE_URL)) {
+    res.status(402).json({
+      error: "Payment payload resource mismatch — this payment was not minted for /copy-review.",
+    });
+    return;
+  }
+
+  // --- Body validation (payment already settled: "upfront" flow).
+  const { pageJson, focus } = req.body as {
+    pageJson?: unknown;
+    focus?: unknown;
+  };
+  if (!pageJson) {
+    res.status(400).json({ error: "Request must include pageJson." });
+    return;
+  }
+  if (!isValidPage(pageJson)) {
+    res.status(400).json({ error: "pageJson does not match the Voicescape page schema." });
+    return;
+  }
+  if (focus !== undefined && (typeof focus !== "string" || !focus.trim())) {
+    res.status(400).json({ error: "focus, when provided, must be a non-empty string." });
+    return;
+  }
+
+  // --- Fail closed: the middleware above must never let a paid request reach
+  // here without an AI backend, but if one ever does, refuse rather than
+  // serve a mock after the buyer paid.
+  if (!AI_BACKEND_ENABLED) {
+    console.error(
+      "[copy-review] request reached handler without ANTHROPIC_API_KEY — refusing (never serve a mock behind a paywall)",
+    );
+    res.status(503).json({
+      error:
+        "Service unavailable: the AI backend is not configured. Contact the operator for a refund.",
+    });
+    return;
+  }
+  // --- The expensive part: call the AI. Runs only after on-chain settlement.
+  try {
+    const review = await reviewCopy(pageJson, typeof focus === "string" ? focus : undefined);
+    res.json({ review });
+  } catch (e) {
+    const message = e instanceof CopyReviewError ? e.message : "Copy review failed unexpectedly.";
+    // Note: the payment has already settled (upfront flow). We return a clear
+    // error rather than burning a retry the buyer can't distinguish.
+    res.status(502).json({ error: message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Vibecode x402 listening on :${PORT}`);
   console.log(`x402 operator client: HEDERA_${NETWORK_NAME.toUpperCase()}`);
   console.log(`  network:     ${NETWORK}`);
   console.log(`  price:       ${getPriceUsdCents()}¢ USD -> ${priceTinybars()} tinybars (HBAR) | ${priceUsdcBaseUnits()} base units (USDC)`);
-  console.log(`  payTo:       ${sellerAccountId}`);
+  console.log(`  payTo:       ${sellerAccountId} (/vibecode)`);
+  console.log(`  payTo:       ${copyReviewSellerAccountId} (/copy-review, danny)`);
   console.log(`  facilitator: ${FACILITATOR_URL} (feePayer ${FEE_PAYER_ACCOUNT})`);
-  console.log(`  resource:    ${VIBECODE_RESOURCE_URL}`);
+  console.log(`  resources:   ${VIBECODE_RESOURCE_URL}, ${COPY_REVIEW_RESOURCE_URL}`);
 });

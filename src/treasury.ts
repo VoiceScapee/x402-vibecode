@@ -69,9 +69,12 @@ export interface TreasuryForwardResult {
   reason?: string;
 }
 
-function operatorClient(): Client | null {
-  const operatorId = process.env.SELLER_ACCOUNT_ID;
-  const operatorKey = process.env.SELLER_PRIVATE_KEY;
+function operatorClient(opts: {
+  operatorId?: string;
+  operatorKey?: string | null;
+} = {}): Client | null {
+  const operatorId = opts.operatorId ?? process.env.SELLER_ACCOUNT_ID;
+  const operatorKey = opts.operatorKey ?? process.env.SELLER_PRIVATE_KEY;
   if (!operatorId || !operatorKey) return null;
   // Network comes from HEDERA_NETWORK (see src/network.ts): testnet by
   // default, mainnet when configured. Never hardcoded.
@@ -94,6 +97,16 @@ export async function forwardTreasuryShare(opts: {
   treasuryAccountId?: string;
   /** When true, compute + log the split without touching the chain. */
   dryRun?: boolean;
+  /**
+   * Operator credentials override. The 2% forward is signed by whoever
+   * received the settled payment: for /vibecode that's the SELLER_* env
+   * pair; for /copy-review it's danny's account (COPY_REVIEW_SELLER_*).
+   * When omitted, the SELLER_* env pair is used.
+   */
+  operatorAccountId?: string;
+  operatorPrivateKey?: string | null;
+  /** Label for the forward memo, e.g. "copy-review". Defaults to "vibecode". */
+  endpointLabel?: string;
 }): Promise<TreasuryForwardResult> {
   const rail = railForAsset(opts.asset); // throws on unsupported asset
   const { operator, treasury } = splitPayment(opts.amount);
@@ -149,15 +162,19 @@ export async function forwardTreasuryShare(opts: {
     return { attempted: true, simulated: true, txId: null, ...base };
   }
 
-  const client = operatorClient();
+  const client = operatorClient({
+    operatorId: opts.operatorAccountId,
+    operatorKey: opts.operatorPrivateKey,
+  });
   if (!client) {
-    console.warn("[treasury] SELLER_PRIVATE_KEY not set — cannot forward 2% share");
+    console.warn("[treasury] operator private key not set — cannot forward 2% share");
     return { attempted: false, txId: null, ...base, reason: "operator-key-missing" };
   }
-  const operatorId = process.env.SELLER_ACCOUNT_ID!;
+  const operatorId = opts.operatorAccountId ?? process.env.SELLER_ACCOUNT_ID!;
+  const label = opts.endpointLabel ?? "vibecode";
   try {
     const tx = new TransferTransaction().setTransactionMemo(
-      "Vibecode x402 — 2% platform treasury share",
+      `${label} x402 — 2% platform treasury share`,
     );
     if (opts.asset === HBAR_ASSET_ID) {
       const share = Hbar.fromTinybars(Number(treasuryShareUnits));

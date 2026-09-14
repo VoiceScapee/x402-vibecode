@@ -23,7 +23,9 @@
 
 import type { Express, Request, Response } from "express";
 import {
+  buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
+  getCopyReviewSellerAccountId,
   getFacilitatorUrl,
   getSellerAccountId,
 } from "./payment.js";
@@ -98,50 +100,37 @@ export interface AgentCard {
 
 /**
  * Build the agent card from LIVE configuration. The payment terms come
- * from buildVibecodeRouteConfig — the exact same source as the 402 — so a
- * price-feed refresh or an HBAR-rail suspension is reflected in the card
- * on the very next request.
+ * from buildVibecodeRouteConfig / buildCopyReviewRouteConfig — the exact
+ * same sources as the 402s — so a price-feed refresh or an HBAR-rail
+ * suspension is reflected in the card on the very next request.
+ *
+ * The card carries one a2a-x402 extension entry PER paid endpoint
+ * (vibecode, copy-review), each with its own serviceEndpoint and accepts
+ * terms, plus one skill per endpoint.
  */
 export function buildAgentCard(opts: {
   publicUrl: string;
   includeHbarRail: boolean;
 }): AgentCard {
-  const routeConfig = buildVibecodeRouteConfig(getSellerAccountId(), {
-    includeHbarRail: opts.includeHbarRail,
-  });
-  // RouteConfig.accepts is typed PaymentOption | PaymentOption[] by
-  // @x402/core; our builder (buildVibecodeRouteConfig, same codebase)
-  // always produces an array of concrete exact-scheme options — assert that
-  // concrete shape here so a single-option future shape can't slip a
-  // non-array (or a dynamic price/payTo) into the card.
-  type ConcreteOption = {
-    scheme: "exact";
-    network: string;
-    payTo: string;
-    price: { asset: string; amount: string };
-    maxTimeoutSeconds: number;
-  };
-  const options = (
-    Array.isArray(routeConfig.accepts)
-      ? routeConfig.accepts
-      : [routeConfig.accepts]
-  ) as ConcreteOption[];
-  const accepts: AgentCardPaymentTerms[] = options.map((a) => ({
-    scheme: "exact",
-    network: a.network,
-    asset: a.price.asset,
-    payTo: a.payTo,
-    amount: a.price.amount,
-    maxTimeoutSeconds: a.maxTimeoutSeconds,
-  }));
+  const vibecodeTerms = termsFor(
+    buildVibecodeRouteConfig(getSellerAccountId(), {
+      includeHbarRail: opts.includeHbarRail,
+    }),
+  );
+  const copyReviewTerms = termsFor(
+    buildCopyReviewRouteConfig(getCopyReviewSellerAccountId(), {
+      includeHbarRail: opts.includeHbarRail,
+    }),
+  );
   return {
     name: "Vibecode x402",
     description:
-      "Pay-per-request AI page builder for Voicescape blockpages. " +
-      "Send page JSON plus an editing instruction; get back the AI-edited " +
-      "page. Every request is paid in a single on-chain x402 transfer on " +
-      "Hedera (native HBAR or USDC rails); the platform keeps a 2% share " +
-      "forwarded on-chain to the Voicescape treasury.",
+      "Pay-per-request AI services for Voicescape blockpages, operated on " +
+      "Hedera via x402. Two skills: an AI page builder (vibecode) and " +
+      "danny the liaison agent's blockpage copy review (copy-review). " +
+      "Every request is paid in a single on-chain x402 transfer on Hedera " +
+      "(native HBAR or USDC rails); the platform keeps a 2% share forwarded " +
+      "on-chain to the Voicescape treasury.",
     provider: {
       organization: "Voicescape",
       url: "https://voicescape.vercel.app",
@@ -159,22 +148,23 @@ export function buildAgentCard(opts: {
       streaming: false,
       pushNotifications: false,
       extensions: [
-        {
-          uri: A2A_X402_EXTENSION_URI,
-          description:
-            "Monetization via the x402 protocol (v2, exact scheme) on " +
+        x402ExtensionEntry(
+          opts.publicUrl,
+          "vibecode",
+          "Monetization via the x402 protocol (v2, exact scheme) on " +
             "Hedera. Clients MUST complete the x402 payment flow before " +
             "the vibecode skill runs.",
-          required: true,
-          params: {
-            x402Version: 2,
-            paymentFlow: "upfront",
-            buyerKeyType: "ECDSA (secp256k1)",
-            facilitator: getFacilitatorUrl(),
-            serviceEndpoint: `POST ${opts.publicUrl}/vibecode`,
-            accepts,
-          },
-        },
+          vibecodeTerms,
+        ),
+        x402ExtensionEntry(
+          opts.publicUrl,
+          "copy-review",
+          "Monetization via the x402 protocol (v2, exact scheme) on " +
+            "Hedera. Clients MUST complete the x402 payment flow before " +
+            "the copy-review skill runs. Payments settle to danny's " +
+            "(the Voicescape liaison agent's) wallet.",
+          copyReviewTerms,
+        ),
       ],
     },
     defaultInputModes: ["application/json"],
@@ -197,8 +187,82 @@ export function buildAgentCard(opts: {
           "Restyle my page header with a neon sound-wave theme",
         ],
       },
+      {
+        id: "copy-review",
+        name: "Blockpage copy review (danny)",
+        description:
+          "POST { pageJson, focus? } to /copy-review and receive " +
+          "{ review } — danny the Voicescape liaison agent's structured " +
+          "copy critique: summary, honest 1-10 score, strengths, per-block " +
+          "suggestions with concrete fixes, and a rewritten bio draft. " +
+          "Payment settles on-chain BEFORE the AI runs (upfront flow): " +
+          "402 Payment Required -> retry with PAYMENT-SIGNATURE -> 200 " +
+          "plus PAYMENT-RESPONSE settle receipt. This card uses the A2A " +
+          "AgentCard format for discovery; the service speaks the x402 " +
+          "HTTP payment flow, not A2A JSON-RPC message/send.",
+        tags: ["web3", "hedera", "x402", "ai", "copywriting", "blockpage", "micropayments"],
+        examples: [
+          "Review my blockpage copy and tell me what to fix",
+          "Score my bio and rewrite it tighter",
+        ],
+      },
     ],
   };
+}
+
+/** One a2a-x402 extension entry for a paid endpoint. */
+function x402ExtensionEntry(
+  publicUrl: string,
+  endpoint: string,
+  description: string,
+  accepts: AgentCardPaymentTerms[],
+): AgentCard["capabilities"]["extensions"][number] {
+  return {
+    uri: A2A_X402_EXTENSION_URI,
+    description,
+    required: true,
+    params: {
+      x402Version: 2,
+      paymentFlow: "upfront",
+      buyerKeyType: "ECDSA (secp256k1)",
+      facilitator: getFacilitatorUrl(),
+      serviceEndpoint: `POST ${publicUrl}/${endpoint}`,
+      accepts,
+    },
+  };
+}
+
+/**
+ * Extract concrete exact-scheme payment terms from a route config.
+ * RouteConfig.accepts is typed PaymentOption | PaymentOption[] by
+ * @x402/core; our builders (same codebase) always produce an array of
+ * concrete exact-scheme options — assert that concrete shape here so a
+ * single-option future shape can't slip a non-array (or a dynamic
+ * price/payTo) into the card.
+ */
+function termsFor(routeConfig: {
+  accepts: unknown;
+}): AgentCardPaymentTerms[] {
+  type ConcreteOption = {
+    scheme: "exact";
+    network: string;
+    payTo: string;
+    price: { asset: string; amount: string };
+    maxTimeoutSeconds: number;
+  };
+  const options = (
+    Array.isArray(routeConfig.accepts)
+      ? routeConfig.accepts
+      : [routeConfig.accepts]
+  ) as ConcreteOption[];
+  return options.map((a) => ({
+    scheme: "exact",
+    network: a.network,
+    asset: a.price.asset,
+    payTo: a.payTo,
+    amount: a.price.amount,
+    maxTimeoutSeconds: a.maxTimeoutSeconds,
+  }));
 }
 
 /**

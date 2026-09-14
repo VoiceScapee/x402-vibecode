@@ -50,6 +50,162 @@ export const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 export class VibecodeError extends Error {}
 
 /**
+ * Structured blockpage copy review returned by reviewCopy().
+ *
+ * HONEST FRAMING: this is an AI-generated critique, not a human editor's
+ * judgment. Scores are calibrated to be useful, not flattering — most
+ * real pages land 4-7.
+ */
+export interface CopyReview {
+  /** 2-3 sentence overall take. */
+  summary: string;
+  /** 1-10, calibrated: 5 = average, 8+ = genuinely strong. */
+  score: number;
+  /** What's already working. */
+  strengths: string[];
+  /** Actionable fixes, each naming the block it applies to. */
+  suggestions: Array<{ block: string; issue: string; fix: string }>;
+  /** A tighter draft of the bio block, when the page has one worth rewriting. */
+  rewrittenBio?: string;
+}
+
+/** Structural check for a CopyReview. Pure and dependency-free. */
+export function isValidCopyReview(input: unknown): input is CopyReview {
+  if (typeof input !== "object" || input === null) return false;
+  const r = input as Record<string, unknown>;
+  if (typeof r.summary !== "string" || r.summary.length === 0) return false;
+  if (typeof r.score !== "number" || !Number.isInteger(r.score) || r.score < 1 || r.score > 10)
+    return false;
+  if (
+    !Array.isArray(r.strengths) ||
+    !r.strengths.every((s) => typeof s === "string" && s.length > 0)
+  )
+    return false;
+  if (
+    !Array.isArray(r.suggestions) ||
+    !r.suggestions.every(
+      (s) =>
+        typeof s === "object" &&
+        s !== null &&
+        typeof (s as Record<string, unknown>).block === "string" &&
+        typeof (s as Record<string, unknown>).issue === "string" &&
+        typeof (s as Record<string, unknown>).fix === "string",
+    )
+  )
+    return false;
+  if (r.rewrittenBio !== undefined && typeof r.rewrittenBio !== "string") return false;
+  return true;
+}
+
+const COPY_REVIEW_SYSTEM_PROMPT = `You are Danny, the Voicescape liaison agent, reviewing a user's blockpage copy. Be genuinely useful: specific, honest, and kind. You are an AI reviewer — say so in the summary if relevant, never pretend to be human.
+
+You must output ONLY a single JSON object. No markdown, no code fences, no explanation, no commentary.
+
+The JSON must match this shape exactly:
+{
+  "summary": "2-3 sentence overall take on the page's copy",
+  "score": "integer 1-10. Calibrate honestly: 5 = average, 8+ = genuinely strong. Most pages land 4-7.",
+  "strengths": ["what's already working (be specific, quote short phrases)"],
+  "suggestions": [
+    { "block": "the block type this applies to, e.g. hero, bio, links, music",
+      "issue": "what's weak, in one sentence",
+      "fix": "the concrete rewrite or action, in one or two sentences" }
+  ],
+  "rewrittenBio": "optional: a tighter draft of the bio block, max 3 sentences. Omit if the page has no bio."
+}
+
+Rules:
+- Score honestly — a page of placeholder text is a 2-3, not a 7.
+- Every suggestion must name a real block from the page and give a concrete fix, not generic advice ("add more personality" is not a fix; "open with what you build, not what you are" is).
+- Never invent usernames, real people, or URLs beyond what the page contains.
+- Keep the whole review tight: summary + strengths + at most 5 suggestions.`;
+
+export class CopyReviewError extends Error {}
+
+/**
+ * Review a blockpage's copy via the Anthropic API. The page is validated
+ * by the caller (the x402 handler); this validates the MODEL's output
+ * against the review shape before returning it.
+ *
+ * Token budget is deliberately smaller than vibecode's (2048 vs 4096 max
+ * output): a critique is cheaper than a full page rewrite, so the global
+ * startup price floor (computed on the larger budget) is conservative for
+ * this endpoint — it can never lose money at a price vibecode accepts.
+ */
+export async function reviewCopy(
+  pageJson: unknown,
+  focus?: string,
+): Promise<CopyReview> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new CopyReviewError(
+      "ANTHROPIC_API_KEY is not set. Add it to the environment to enable the copy-review AI.",
+    );
+  }
+  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+
+  const userContent =
+    `Blockpage JSON to review:\n${JSON.stringify(pageJson)}\n\n` +
+    (focus && focus.trim() ? `Reviewer focus requested: ${focus.trim()}\n\n` : "") +
+    `Return the copy review JSON only.`;
+
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 2048,
+        system: COPY_REVIEW_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+  } catch (e) {
+    throw new CopyReviewError(
+      `Failed to reach Anthropic API: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new CopyReviewError(
+      `Anthropic API error (${res.status}): ${text.slice(0, 500)}`,
+    );
+  }
+
+  const data = (await res.json()) as {
+    content?: { type?: string; text?: string }[];
+  };
+  const textBlock = data.content?.find(
+    (b) => b.type === "text" && typeof b.text === "string",
+  );
+  const raw = (textBlock?.text ?? "").trim();
+  if (!raw) throw new CopyReviewError("Anthropic returned no text content.");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new CopyReviewError(
+      "Model did not return valid JSON for the review.",
+    );
+  }
+
+  if (!isValidCopyReview(parsed)) {
+    throw new CopyReviewError(
+      "Model returned JSON that does not match the review schema.",
+    );
+  }
+
+  return parsed;
+}
+
+/**
  * Apply `instruction` to `pageJson` via the Anthropic API.
  * Throws VibecodeError with a human-readable message on any failure.
  */

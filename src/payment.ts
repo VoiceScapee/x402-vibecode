@@ -280,12 +280,74 @@ export function buildVibecodeRouteConfig(
   payTo: string,
   opts: { includeHbarRail?: boolean } = {},
 ): RouteConfig {
-  // The network AND the USDC token id both follow HEDERA_NETWORK (default
-  // testnet): usdcAssetIdForNetwork throws for unknown networks, so a
-  // misconfiguration can never silently advertise the wrong token.
+  return buildRouteConfig({
+    payTo,
+    includeHbarRail: opts.includeHbarRail,
+    serviceName: "Vibecode x402",
+    description:
+      "Vibecode: AI page-builder for Voicescape. POST { pageJson, instruction } -> { pageJson } (AI-edited). " +
+      "Buyer keys must be ECDSA (secp256k1); ED25519 keys are not supported by the x402 buyer tooling.",
+    resourcePlaceholder: "https://x402-vibecode.local/vibecode",
+  });
+}
+
+/**
+ * The account receiving copy-review payments — danny's (the liaison
+ * agent's) wallet, NOT the vibecode operator's. Fail-fast like
+ * getSellerAccountId: a missing value must never silently route danny's
+ * revenue to the wrong account.
+ */
+export function getCopyReviewSellerAccountId(): string {
+  const id = process.env.COPY_REVIEW_SELLER_ACCOUNT_ID?.trim();
+  if (!id) {
+    throw new Error(
+      "COPY_REVIEW_SELLER_ACCOUNT_ID is not set (the liaison agent account " +
+        "receiving /copy-review payments).",
+    );
+  }
+  return id;
+}
+
+/**
+ * The route-level payment options served on POST /copy-review — danny's
+ * paid blockpage copy-review. Same price quote, same two rails, same
+ * upfront settle-before-serve flow as /vibecode; only the payTo (danny's
+ * wallet) and the advertised service differ.
+ */
+export function buildCopyReviewRouteConfig(
+  payTo: string,
+  opts: { includeHbarRail?: boolean } = {},
+): RouteConfig {
+  return buildRouteConfig({
+    payTo,
+    includeHbarRail: opts.includeHbarRail,
+    serviceName: "Danny copy-review x402",
+    description:
+      "Danny's blockpage copy review (Voicescape liaison agent). " +
+      "POST /copy-review { pageJson, focus? } -> { review } (structured copy critique: " +
+      "summary, score, strengths, per-block suggestions, rewritten bio). " +
+      "Buyer keys must be ECDSA (secp256k1); ED25519 keys are not supported " +
+      "by the x402 buyer tooling.",
+    resourcePlaceholder: "https://x402-vibecode.local/copy-review",
+  });
+}
+
+/**
+ * Shared 402 route-config builder. The network AND the USDC token id both
+ * follow HEDERA_NETWORK (default testnet): usdcAssetIdForNetwork throws for
+ * unknown networks, so a misconfiguration can never silently advertise the
+ * wrong token.
+ */
+function buildRouteConfig(args: {
+  payTo: string;
+  includeHbarRail?: boolean;
+  serviceName: string;
+  description: string;
+  resourcePlaceholder: string;
+}): RouteConfig {
   const network = hederaNetworkId();
   const usdcAsset = usdcAssetIdForNetwork(network);
-  const includeHbarRail = opts.includeHbarRail ?? true;
+  const includeHbarRail = args.includeHbarRail ?? true;
   const extra = {
     feePayer: getFeePayerAccount(),
     paymentFlow: "upfront",
@@ -299,7 +361,7 @@ export function buildVibecodeRouteConfig(
   if (includeHbarRail) {
     accepts.push({
       scheme: SCHEME,
-      payTo,
+      payTo: args.payTo,
       network,
       price: { asset: HBAR_ASSET_ID, amount: priceTinybars() },
       maxTimeoutSeconds: 180,
@@ -312,19 +374,17 @@ export function buildVibecodeRouteConfig(
   }
   accepts.push({
     scheme: SCHEME,
-    payTo,
+    payTo: args.payTo,
     network,
     price: { asset: usdcAsset, amount: priceUsdcBaseUnits() },
     maxTimeoutSeconds: 180,
     extra,
   });
   return {
-    resource: "https://x402-vibecode.local/vibecode",
-    description:
-      "Vibecode: AI page-builder for Voicescape. POST { pageJson, instruction } -> { pageJson } (AI-edited). " +
-      "Buyer keys must be ECDSA (secp256k1); ED25519 keys are not supported by the x402 buyer tooling.",
+    resource: args.resourcePlaceholder,
+    description: args.description,
     mimeType: "application/json",
-    serviceName: "Vibecode x402",
+    serviceName: args.serviceName,
     accepts,
   };
 }

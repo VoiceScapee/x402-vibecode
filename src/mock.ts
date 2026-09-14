@@ -23,10 +23,12 @@ import { ExactHederaScheme as ExactHederaServerScheme } from "@x402/hedera/exact
 import { isValidPage, VoicescapePage } from "./schema.js";
 import { forwardTreasuryShare } from "./treasury.js";
 import { hederaNetworkId } from "./network.js";
+import type { CopyReview } from "./anthropic.js";
 import {
   getFacilitatorUrl,
   getFeePayerAccount,
   HBAR_ASSET_ID,
+  buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
   getPriceUsdCents,
   priceTinybars,
@@ -39,6 +41,7 @@ export const MOCK_RESOURCE_PORT = 4100;
 export const MOCK_FACILITATOR_URL = `http://127.0.0.1:${MOCK_FACILITATOR_PORT}`;
 export const MOCK_RESOURCE_URL = `http://127.0.0.1:${MOCK_RESOURCE_PORT}`;
 export const MOCK_SELLER = "0.0.8888";
+export const MOCK_COPY_REVIEW_SELLER = "0.0.8889";
 export const MOCK_BUYER = "0.0.9999";
 export const MOCK_TREASURY = "0.0.7777";
 
@@ -51,6 +54,26 @@ export function mockVibecodeEdit(page: VoicescapePage, instruction: string): Voi
       ...page.blocks,
       { type: "bio", text: `[mock AI] Applied: ${instruction.slice(0, 120)}` },
     ],
+  };
+}
+
+/** Deterministic stand-in for the copy-review AI: a canned honest review. */
+export function mockCopyReview(page: VoicescapePage, focus?: string): CopyReview {
+  const bioBlock = page.blocks.find((b) => b.type === "bio") as
+    | { type: "bio"; text: string }
+    | undefined;
+  return {
+    summary: `[mock AI] Reviewed "${page.username}"${focus ? ` with focus "${focus.slice(0, 80)}"` : ""}. Straightforward page, room to sharpen the hook.`,
+    score: 5,
+    strengths: ["Clear hero title that says what the page is for."],
+    suggestions: [
+      {
+        block: "bio",
+        issue: "Bio states facts but gives no reason to stay.",
+        fix: "Open with the one thing visitors get here that they can't get elsewhere.",
+      },
+    ],
+    ...(bioBlock ? { rewrittenBio: `[mock AI] Tighter draft of: ${bioBlock.text.slice(0, 80)}` } : {}),
   };
 }
 
@@ -124,9 +147,22 @@ function startMockResourceServer(): Promise<import("http").Server> {
   routeConfig.resource = `${MOCK_RESOURCE_URL}/vibecode`;
   routeConfig.description = "[MOCK] Vibecode vibecode endpoint (dry-run)";
 
+  // Danny's copy-review endpoint on the mock stack: same 402 shape, payTo
+  // is danny's mock wallet so the dry-run exercises per-route settlement.
+  const copyReviewRouteConfig = buildCopyReviewRouteConfig(MOCK_COPY_REVIEW_SELLER, {
+    includeHbarRail: true,
+  });
+  copyReviewRouteConfig.resource = `${MOCK_RESOURCE_URL}/copy-review`;
+  copyReviewRouteConfig.description = "[MOCK] Danny copy-review endpoint (dry-run)";
+
   const app = express();
   app.use(express.json());
-  app.use(paymentMiddleware({ "POST /vibecode": routeConfig }, resourceServer));
+  app.use(
+    paymentMiddleware(
+      { "POST /vibecode": routeConfig, "POST /copy-review": copyReviewRouteConfig },
+      resourceServer,
+    ),
+  );
 
   app.get("/", (_req, res) => {
     res.json({
@@ -163,6 +199,26 @@ function startMockResourceServer(): Promise<import("http").Server> {
     // NOTE: the real server calls Anthropic here. The mock applies a
     // deterministic edit so the dry-run needs no API key.
     res.json({ pageJson: mockVibecodeEdit(pageJson, instruction) });
+  });
+
+  app.post("/copy-review", (req, res) => {
+    const { pageJson, focus } = req.body as {
+      pageJson?: unknown;
+      focus?: unknown;
+    };
+    if (!isValidPage(pageJson)) {
+      res.status(400).json({ error: "pageJson required" });
+      return;
+    }
+    if (focus !== undefined && (typeof focus !== "string" || !focus.trim())) {
+      res.status(400).json({ error: "focus, when provided, must be a non-empty string" });
+      return;
+    }
+    // NOTE: the real server calls Anthropic here. The mock returns a
+    // deterministic canned review so the dry-run needs no API key.
+    res.json({
+      review: mockCopyReview(pageJson, typeof focus === "string" ? focus : undefined),
+    });
   });
 
   return new Promise((resolve) => {

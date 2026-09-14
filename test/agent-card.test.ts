@@ -25,6 +25,7 @@ import {
   type AgentCard,
 } from "../src/agent-card.js";
 import {
+  buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
   HBAR_ASSET_ID,
   HEDERA_TESTNET_NETWORK,
@@ -52,12 +53,17 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
 }
 
 const SELLER = "0.0.12345";
+const DANNY = "0.0.10857765";
 const PUBLIC_URL = "https://example.com";
 
 function card(includeHbarRail = true): AgentCard {
   let c: AgentCard | undefined;
   withEnv(
-    { SELLER_ACCOUNT_ID: SELLER, HEDERA_NETWORK: undefined },
+    {
+      SELLER_ACCOUNT_ID: SELLER,
+      COPY_REVIEW_SELLER_ACCOUNT_ID: DANNY,
+      HEDERA_NETWORK: undefined,
+    },
     () => {
       c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail });
     },
@@ -91,12 +97,24 @@ describe("agent card structure (A2A 1.0 §4.4.1)", () => {
     assert.equal(card().version, pkg.version);
   });
 
-  it("declares the official a2a-x402 extension as required", () => {
+  it("declares the official a2a-x402 extension as required (one entry per paid endpoint)", () => {
     const exts = card().capabilities.extensions;
-    assert.equal(exts.length, 1);
-    assert.equal(exts[0].uri, A2A_X402_EXTENSION_URI);
-    assert.equal(exts[0].required, true);
-    assert.ok(exts[0].description.length > 0);
+    assert.equal(exts.length, 2);
+    const endpoints = exts.map((e) => e.params.serviceEndpoint).sort();
+    assert.deepEqual(endpoints, [
+      `POST ${PUBLIC_URL}/copy-review`,
+      `POST ${PUBLIC_URL}/vibecode`,
+    ]);
+    for (const e of exts) {
+      assert.equal(e.uri, A2A_X402_EXTENSION_URI);
+      assert.equal(e.required, true);
+      assert.ok(e.description.length > 0);
+    }
+  });
+
+  it("lists both skills (vibecode + danny's copy review)", () => {
+    const ids = card().skills.map((s) => s.id).sort();
+    assert.deepEqual(ids, ["copy-review", "vibecode"]);
   });
 
   it("is honest about the wire protocol (x402 HTTP flow, not A2A JSON-RPC)", () => {
@@ -106,43 +124,90 @@ describe("agent card structure (A2A 1.0 §4.4.1)", () => {
 });
 
 describe("payment terms match the live 402", () => {
-  it("extension params mirror buildVibecodeRouteConfig exactly", () => {
+  function checkTermsMirror(
+    params: AgentCard["capabilities"]["extensions"][number]["params"],
+    expected: { accepts: unknown },
+    payTo: string,
+  ) {
+    assert.equal(params.x402Version, 2);
+    const want = expected.accepts as Array<{
+      network: string;
+      price: { asset: string; amount: string };
+      maxTimeoutSeconds: number;
+    }>;
+    assert.equal(params.accepts.length, want.length);
+    for (let i = 0; i < want.length; i++) {
+      const got = params.accepts[i];
+      assert.equal(got.scheme, "exact");
+      assert.equal(got.network, want[i].network);
+      assert.equal(got.network, HEDERA_TESTNET_NETWORK);
+      assert.equal(got.asset, want[i].price.asset);
+      assert.equal(got.payTo, want[i].payTo);
+      assert.equal(got.payTo, payTo);
+      assert.equal(got.amount, want[i].price.amount);
+      assert.equal(got.maxTimeoutSeconds, want[i].maxTimeoutSeconds);
+    }
+  }
+
+  it("vibecode extension params mirror buildVibecodeRouteConfig exactly", () => {
     withEnv(
-      { SELLER_ACCOUNT_ID: SELLER, HEDERA_NETWORK: undefined },
+      {
+        SELLER_ACCOUNT_ID: SELLER,
+        COPY_REVIEW_SELLER_ACCOUNT_ID: DANNY,
+        HEDERA_NETWORK: undefined,
+      },
       () => {
         const c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail: true });
-        const params = c.capabilities.extensions[0].params;
-        assert.equal(params.x402Version, 2);
-        const expected = buildVibecodeRouteConfig(SELLER, { includeHbarRail: true });
-        assert.equal(params.accepts.length, expected.accepts.length);
-        for (let i = 0; i < expected.accepts.length; i++) {
-          const want = expected.accepts[i];
-          const got = params.accepts[i];
-          assert.equal(got.scheme, "exact");
-          assert.equal(got.network, want.network);
-          assert.equal(got.network, HEDERA_TESTNET_NETWORK);
-          assert.equal(got.asset, want.price.asset);
-          assert.equal(got.payTo, want.payTo);
-          assert.equal(got.payTo, SELLER);
-          assert.equal(got.amount, want.price.amount);
-          assert.equal(got.maxTimeoutSeconds, want.maxTimeoutSeconds);
-        }
+        const vibecodeExt = c.capabilities.extensions.find((e) =>
+          e.params.serviceEndpoint.endsWith("/vibecode"),
+        )!;
+        checkTermsMirror(
+          vibecodeExt.params,
+          buildVibecodeRouteConfig(SELLER, { includeHbarRail: true }),
+          SELLER,
+        );
       },
     );
   });
 
-  it("a suspended HBAR rail disappears from the card too", () => {
-    const c = card(false);
-    const assets = c.capabilities.extensions[0].params.accepts.map((a) => a.asset);
-    assert.ok(!assets.includes(HBAR_ASSET_ID), "HBAR rail must be absent when suspended");
-    assert.ok(assets.length >= 1, "USDC rail stays advertised");
+  it("copy-review extension params mirror buildCopyReviewRouteConfig with danny's payTo", () => {
+    withEnv(
+      {
+        SELLER_ACCOUNT_ID: SELLER,
+        COPY_REVIEW_SELLER_ACCOUNT_ID: DANNY,
+        HEDERA_NETWORK: undefined,
+      },
+      () => {
+        const c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail: true });
+        const reviewExt = c.capabilities.extensions.find((e) =>
+          e.params.serviceEndpoint.endsWith("/copy-review"),
+        )!;
+        assert.ok(reviewExt, "copy-review extension entry missing");
+        checkTermsMirror(
+          reviewExt.params,
+          buildCopyReviewRouteConfig(DANNY, { includeHbarRail: true }),
+          DANNY,
+        );
+      },
+    );
   });
 
-  it("advertises both rails when the price feed is live", () => {
+  it("a suspended HBAR rail disappears from BOTH endpoints' terms", () => {
+    const c = card(false);
+    for (const ext of c.capabilities.extensions) {
+      const assets = ext.params.accepts.map((a) => a.asset);
+      assert.ok(!assets.includes(HBAR_ASSET_ID), "HBAR rail must be absent when suspended");
+      assert.ok(assets.length >= 1, "USDC rail stays advertised");
+    }
+  });
+
+  it("advertises both rails on both endpoints when the price feed is live", () => {
     const c = card(true);
-    const assets = c.capabilities.extensions[0].params.accepts.map((a) => a.asset);
-    assert.ok(assets.includes(HBAR_ASSET_ID));
-    assert.equal(assets.length, 2);
+    for (const ext of c.capabilities.extensions) {
+      const assets = ext.params.accepts.map((a) => a.asset);
+      assert.ok(assets.includes(HBAR_ASSET_ID));
+      assert.equal(assets.length, 2);
+    }
   });
 });
 
@@ -154,8 +219,10 @@ describe("well-known HTTP routes", () => {
   beforeEach(async () => {
     // Hold the env for the server's whole lifetime — the card is built
     // per-request from live config.
-    for (const k of ["SELLER_ACCOUNT_ID", "HEDERA_NETWORK"]) saved[k] = process.env[k];
+    for (const k of ["SELLER_ACCOUNT_ID", "COPY_REVIEW_SELLER_ACCOUNT_ID", "HEDERA_NETWORK"])
+      saved[k] = process.env[k];
     process.env.SELLER_ACCOUNT_ID = SELLER;
+    process.env.COPY_REVIEW_SELLER_ACCOUNT_ID = DANNY;
     delete process.env.HEDERA_NETWORK;
     const app = express();
     registerAgentCardRoutes(app, () =>

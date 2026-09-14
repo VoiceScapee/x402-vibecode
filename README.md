@@ -185,11 +185,32 @@ never fail a paid request. Unset `TREASURY_ACCOUNT_ID` to run without the split.
 | `GET /` | none | Service info: price (USD quote + both rails), payTo, network, facilitator |
 | `GET /health` | none | Liveness + config summary |
 | `POST /vibecode` | x402 payment (HBAR or USDC rail) | `{ pageJson, instruction }` → `{ pageJson }` |
+| `POST /copy-review` | x402 payment (HBAR or USDC rail) | `{ pageJson, focus? }` → `{ review }` — danny's blockpage copy review (summary, honest 1-10 score, strengths, per-block suggestions, rewritten bio). Payments settle to danny's wallet (`COPY_REVIEW_SELLER_ACCOUNT_ID`); same price, same 98/2 split |
 
 `pageJson` must match the Voicescape page schema (`src/schema.ts`, copied from
 the Voicescape repo so this project is standalone); invalid bodies get 400.
 The model is constrained by a system prompt to output only valid page JSON,
 and the result is re-validated before returning.
+
+### Danny's copy review (`POST /copy-review`)
+
+The liaison agent's paid service, hosted on this server. A buyer posts a
+blockpage's `pageJson` (plus an optional `focus` string like "be harsh about
+my bio") and gets back a structured critique — an honest 1-10 score
+(calibrated: most real pages land 4-7), specific strengths, per-block
+suggestions with concrete fixes, and a tighter bio draft. It's an
+AI-generated review, and it says so; never marketed as a human editor.
+
+Economics are identical to `/vibecode`: same USD price (`PRICE_USD_CENTS`),
+same two rails, same upfront settle-before-serve flow, same 98/2 treasury
+forward (in the asset paid). The only differences are the payee (danny's
+wallet via `COPY_REVIEW_SELLER_ACCOUNT_ID`, fail-fast if unset) and a
+smaller AI token budget (2048 max output tokens vs 4096) — the global
+startup price floor is computed on the larger budget, so it stays
+conservative for this endpoint. Settlement + 2% forward + HCS audit entry
+all land in danny's name; the audit entry records `endpoint:
+"/copy-review"` so the two revenue streams stay distinguishable on the
+public feed.
 
 ## Environment variables
 
@@ -199,7 +220,9 @@ and the result is re-validated before returning.
 | `FEE_PAYER_ACCOUNT` | yes on mainnet/previewnet | Fee-payer account the buyer's partial tx is frozen with (the facilitator adds its signature + submits). Testnet defaults to Blocky402's `0.0.7162784`; on mainnet set this to **the self-hosted facilitator's `HEDERA_FACILITATOR_ID`** (same account — it must match the facilitator you point at). |
 | `FACILITATOR_API_KEY` | only for Blocky402 mainnet | API key sent as the `X-Api-Key` header on facilitator verify/settle/supported calls. **Leave empty for the self-hosted facilitator** (it needs no key — the standard contract has no auth). Only set this if you fall back to Blocky402 mainnet. |
 | `HEDERA_NETWORK` | no | Which Hedera network to use: `mainnet` / `testnet` / `previewnet` (default `testnet`). **Strict** — anything else crashes at startup. Drives the 402 network id, the USDC token selection, the treasury 2% forward, and the HCS audit feed. |
-| `SELLER_ACCOUNT_ID` | yes (server) | Account (on `HEDERA_NETWORK`) receiving payments |
+| `SELLER_ACCOUNT_ID` | yes (server) | Account (on `HEDERA_NETWORK`) receiving /vibecode payments |
+| `COPY_REVIEW_SELLER_ACCOUNT_ID` | yes (server) | Account (on `HEDERA_NETWORK`) receiving /copy-review payments — danny's wallet (0.0.10857765 on mainnet). Fail-fast if unset: danny's revenue must never silently route to the vibecode seller |
+| `COPY_REVIEW_SELLER_PRIVATE_KEY` | no (yes for danny's 2% forward) | Danny's operator private key (any key type); forwards the /copy-review 2% treasury share after settlement. Without it the forward is skipped (`operator-key-missing`) and danny keeps 100% — best-effort, never breaks a paid request. **Hot server key** — same lean-account discipline as `SELLER_PRIVATE_KEY` |
 | `ANTHROPIC_API_KEY` | yes (server, for AI) | Anthropic API key |
 | `ANTHROPIC_MODEL` | no | Override (default `claude-sonnet-4-5-20250929`). **Price-floor coupling:** sonnet-class models price at $3/$15 per MTok, haiku-class at $1/$5; an unknown model with no explicit rate overrides **refuses to boot** — set `ANTHROPIC_INPUT_USD_PER_MTOK` + `ANTHROPIC_OUTPUT_USD_PER_MTOK` (USD per million tokens, both required). |
 | `ANTHROPIC_INPUT_USD_PER_MTOK` / `ANTHROPIC_OUTPUT_USD_PER_MTOK` | no (yes for unknown models) | Explicit per-MTok rates (USD) for the configured model; override the built-in rate table. Set **both** or neither. |
