@@ -8,18 +8,25 @@
  *   3. HANDSHAKE — POST the service endpoint unpaid, read the x402 402 terms
  *   4. PAY (mocked) — show EXACTLY what would be signed and settled
  *
- * What is real vs mocked:
+ * What is real vs mocked (default run):
  *   REAL:   directory discovery + filtering, the unpaid POST, 402 parsing,
  *           rail selection, amount computation.
- *   MOCKED: the actual payment signature + on-chain settlement. This example
- *           intentionally does not move funds. For the full live x402 buyer
- *           flow (sign, settle, consume), see ../../src/buyer-demo.ts.
+ *   MOCKED: the actual payment signature + on-chain settlement. The default
+ *           run intentionally does not move funds. Pass --real-pay to pay for
+ *           real through the full 402 handshake (see README "Real-payment
+ *           mode"); see ../../src/buyer-demo.ts for the lower-level live
+ *           buyer flow.
  *
- * Run:
+ * Run (mocked — no funds move):
  *   AGENTS_DIRECTORY_URL=http://localhost:3000/api/agents \
  *     npx tsx examples/agent-client/index.ts --capability summarization --max-price-usd-cents 10
  *
- * No dependencies beyond Node 20+ (uses global fetch). No API keys.
+ * Run (REAL payment — spends real funds; see README "Real-payment mode"):
+ *   BUYER_ACCOUNT_ID=0.0.12345 BUYER_PRIVATE_KEY=<ecdsa-key> \
+ *     npx tsx examples/agent-client/index.ts --capability summarization --real-pay
+ *
+ * Default path: no dependencies beyond Node 20+ (uses global fetch), no API
+ * keys. --real-pay dynamically loads the repo's @x402/* buyer stack.
  */
 
 const DIRECTORY_URL =
@@ -32,6 +39,10 @@ function argValue(flag: string): string | undefined {
 
 const WANT_CAPABILITY = (argValue("--capability") ?? "").toLowerCase();
 const MAX_PRICE = Number(argValue("--max-price-usd-cents") ?? "25");
+// --real-pay: pay for real through the full 402 handshake (default OFF).
+// --allow-mainnet: additionally required when the 402 quotes hedera:mainnet.
+const REAL_PAY = process.argv.includes("--real-pay");
+const ALLOW_MAINNET = process.argv.includes("--allow-mainnet");
 
 interface DirectoryService {
   name: string;
@@ -162,6 +173,22 @@ async function main() {
   const buyerKeyType =
     (terms.accepts[0] as { extra?: { buyerKeyType?: unknown } }).extra?.buyerKeyType ??
     "ECDSA (secp256k1)";
+
+  if (REAL_PAY) {
+    const { realPay } = await import("./real-pay.js");
+    step("4/4", "REAL payment (--real-pay): real funds will move...");
+    await realPay({
+      rail,
+      resourceUrl: terms.resource?.url ?? service.endpoint,
+      serviceName: service.name,
+      serviceEndpoint: service.endpoint,
+      priceUsdCents: service.priceUsdCents,
+      maxPriceUsdCents: MAX_PRICE,
+      allowMainnet: ALLOW_MAINNET,
+    });
+    console.log("\nDone. Real payment settled and the service response consumed.");
+    return;
+  }
   step("4/4", "MOCKED payment — what the agent WOULD sign (no funds move):");
   console.log(`      chosen rail: ${rail.network} asset=${rail.asset}`);
   console.log(`      amount:      ${rail.amount} (base units) -> payTo ${rail.payTo}`);

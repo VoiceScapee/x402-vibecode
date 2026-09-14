@@ -28,6 +28,54 @@ Flags:
 
 - `--capability <tag>` — substring match on capability tags and service names
 - `--max-price-usd-cents <n>` — price ceiling in USD cents (default 25)
+- `--real-pay` — **spend real funds**: pay exactly the 402-advertised amount
+  on the chosen rail through the full 402 handshake (default OFF — the normal
+  run is mocked and never moves funds)
+- `--allow-mainnet` — additionally required when the 402 quotes
+  `hedera:mainnet`; without it, mainnet payments are refused
+
+## Real-payment mode (`--real-pay`)
+
+The default run is a dry rehearsal. `--real-pay` turns it into a real buyer:
+
+```bash
+BUYER_ACCOUNT_ID=0.0.12345 BUYER_PRIVATE_KEY=<ecdsa-secp256k1-key> \
+  npx tsx examples/agent-client/index.ts --capability summarization --real-pay
+```
+
+**The exact tiny amount:** the client pays *exactly* the amount in the chosen
+402 rail — no more (spend controls cap the payment at the quote; the service
+cannot charge extra). For the Vibecode service that is the advertised price —
+25¢ USD worth of HBAR on the HBAR rail, or the USDC equivalent on the USDC
+rail — per request. The client additionally re-checks the directory's
+self-reported `priceUsdCents` against `--max-price-usd-cents` and refuses if
+it is over the cap.
+
+**Guard rails (all refuse before any money moves):**
+
+- unknown network in the 402 terms → refuse
+- `hedera:mainnet` without `--allow-mainnet` → refuse (testnet/previewnet
+  proceed; mainnet needs the second explicit flag)
+- price above `--max-price-usd-cents` (or a missing price) → refuse
+- service is not the vibecode `{ pageJson, instruction }` shape → refuse
+  ("never pay blind" — the client must know the request schema, because the
+  upfront x402 flow settles *before* the service runs)
+
+**Risks — read before you run it:**
+
+- Real funds move on the network the **402 advertises**, not the one you
+  assume. The client prints the network, amount, asset, and payee before
+  paying — read it. Testnet first, always.
+- `BUYER_PRIVATE_KEY` must be **ECDSA (secp256k1)**. Fund the buyer account
+  with only what you plan to spend plus a little for fees — never use a
+  treasury or operator key.
+- The flow is **upfront**: payment settles before the service runs. If the
+  service errors after settlement you paid and got an error — the settle
+  transaction ID is printed from the `PAYMENT-RESPONSE` header — keep it, and
+  contact the service operator for a refund.
+- **USDC rail:** the buyer account must be *associated* with the USDC token
+  (0.0.456858 on mainnet, 0.0.429274 on testnet) and hold a balance, or
+  settlement fails. HashPack: account → Tokens → Add token.
 
 ## Real vs mocked
 
@@ -35,8 +83,8 @@ Flags:
 |---|---|
 | Directory discovery + filtering | **Real** HTTP |
 | 402 handshake + rail/amount parsing | **Real** HTTP |
-| Payment signature + settlement | **Mocked** — prints what *would* be signed |
-| Spending real HBAR/USDC | **Never** — by design |
+| Payment signature + settlement | **Mocked by default** — prints what *would* be signed; real only with `--real-pay` |
+| Spending real HBAR/USDC | **Never by default** — only with `--real-pay` (and `--allow-mainnet` on mainnet) |
 
 For the full live x402 buyer flow (sign with a real Hedera key, settle via the
 facilitator, consume the service), see [`src/buyer-demo.ts`](../src/buyer-demo.ts)
