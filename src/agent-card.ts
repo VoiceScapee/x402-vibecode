@@ -25,7 +25,6 @@ import type { Express, Request, Response } from "express";
 import {
   buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
-  getCopyReviewSellerAccountId,
   getFacilitatorUrl,
   getSellerAccountId,
 } from "./payment.js";
@@ -105,29 +104,38 @@ export interface AgentCard {
  * suspension is reflected in the card on the very next request.
  *
  * The card carries one a2a-x402 extension entry PER paid endpoint
- * (vibecode, copy-review), each with its own serviceEndpoint and accepts
- * terms, plus one skill per endpoint.
+ * (vibecode, plus copy-review when COPY_REVIEW_SELLER_ACCOUNT_ID is set),
+ * each with its own serviceEndpoint and accepts terms, plus one skill per
+ * endpoint.
  */
 export function buildAgentCard(opts: {
   publicUrl: string;
   includeHbarRail: boolean;
+  /** danny's wallet receiving /copy-review payments; null disables the copy-review skill. */
+  copyReviewSellerAccountId: string | null;
 }): AgentCard {
   const vibecodeTerms = termsFor(
     buildVibecodeRouteConfig(getSellerAccountId(), {
       includeHbarRail: opts.includeHbarRail,
     }),
   );
-  const copyReviewTerms = termsFor(
-    buildCopyReviewRouteConfig(getCopyReviewSellerAccountId(), {
-      includeHbarRail: opts.includeHbarRail,
-    }),
-  );
+  const copyReviewTerms = opts.copyReviewSellerAccountId
+    ? termsFor(
+        buildCopyReviewRouteConfig(opts.copyReviewSellerAccountId, {
+          includeHbarRail: opts.includeHbarRail,
+        }),
+      )
+    : null;
+  const copyReviewDescription =
+    "danny the liaison agent's blockpage copy review (copy-review)";
   return {
     name: "Vibecode x402",
     description:
       "Pay-per-request AI services for Voicescape blockpages, operated on " +
-      "Hedera via x402. Two skills: an AI page builder (vibecode) and " +
-      "danny the liaison agent's blockpage copy review (copy-review). " +
+      "Hedera via x402. " +
+      (copyReviewTerms
+        ? "Two skills: an AI page builder (vibecode) and " + copyReviewDescription + ". "
+        : "One skill: an AI page builder (vibecode). ") +
       "Every request is paid in a single on-chain x402 transfer on Hedera " +
       "(native HBAR or USDC rails); the platform keeps a 2% share forwarded " +
       "on-chain to the Voicescape treasury.",
@@ -156,15 +164,19 @@ export function buildAgentCard(opts: {
             "the vibecode skill runs.",
           vibecodeTerms,
         ),
-        x402ExtensionEntry(
-          opts.publicUrl,
-          "copy-review",
-          "Monetization via the x402 protocol (v2, exact scheme) on " +
-            "Hedera. Clients MUST complete the x402 payment flow before " +
-            "the copy-review skill runs. Payments settle to danny's " +
-            "(the Voicescape liaison agent's) wallet.",
-          copyReviewTerms,
-        ),
+        ...(copyReviewTerms
+          ? [
+              x402ExtensionEntry(
+                opts.publicUrl,
+                "copy-review",
+                "Monetization via the x402 protocol (v2, exact scheme) on " +
+                  "Hedera. Clients MUST complete the x402 payment flow before " +
+                  "the copy-review skill runs. Payments settle to danny's " +
+                  "(the Voicescape liaison agent's) wallet.",
+                copyReviewTerms,
+              ),
+            ]
+          : []),
       ],
     },
     defaultInputModes: ["application/json"],
@@ -187,25 +199,37 @@ export function buildAgentCard(opts: {
           "Restyle my page header with a neon sound-wave theme",
         ],
       },
-      {
-        id: "copy-review",
-        name: "Blockpage copy review (danny)",
-        description:
-          "POST { pageJson, focus? } to /copy-review and receive " +
-          "{ review } — danny the Voicescape liaison agent's structured " +
-          "copy critique: summary, honest 1-10 score, strengths, per-block " +
-          "suggestions with concrete fixes, and a rewritten bio draft. " +
-          "Payment settles on-chain BEFORE the AI runs (upfront flow): " +
-          "402 Payment Required -> retry with PAYMENT-SIGNATURE -> 200 " +
-          "plus PAYMENT-RESPONSE settle receipt. This card uses the A2A " +
-          "AgentCard format for discovery; the service speaks the x402 " +
-          "HTTP payment flow, not A2A JSON-RPC message/send.",
-        tags: ["web3", "hedera", "x402", "ai", "copywriting", "blockpage", "micropayments"],
-        examples: [
-          "Review my blockpage copy and tell me what to fix",
-          "Score my bio and rewrite it tighter",
-        ],
-      },
+      ...(copyReviewTerms
+        ? [
+            {
+              id: "copy-review",
+              name: "Blockpage copy review (danny)",
+              description:
+                "POST { pageJson, focus? } to /copy-review and receive " +
+                "{ review } — danny the Voicescape liaison agent's structured " +
+                "copy critique: summary, honest 1-10 score, strengths, per-block " +
+                "suggestions with concrete fixes, and a rewritten bio draft. " +
+                "Payment settles on-chain BEFORE the AI runs (upfront flow): " +
+                "402 Payment Required -> retry with PAYMENT-SIGNATURE -> 200 " +
+                "plus PAYMENT-RESPONSE settle receipt. This card uses the A2A " +
+                "AgentCard format for discovery; the service speaks the x402 " +
+                "HTTP payment flow, not A2A JSON-RPC message/send.",
+              tags: [
+                "web3",
+                "hedera",
+                "x402",
+                "ai",
+                "copywriting",
+                "blockpage",
+                "micropayments",
+              ],
+              examples: [
+                "Review my blockpage copy and tell me what to fix",
+                "Score my bio and rewrite it tighter",
+              ],
+            },
+          ]
+        : []),
     ],
   };
 }

@@ -44,7 +44,6 @@ import {
   buildCopyReviewRouteConfig,
   buildVibecodeRouteConfig,
   decodePaymentRequiredHeader,
-  getCopyReviewSellerAccountId,
   getFacilitatorApiKey,
   getFacilitatorUrl,
   getFeePayerAccount,
@@ -74,8 +73,19 @@ const NETWORK = hederaNetworkId();
 
 const sellerAccountId = getSellerAccountId(); // fails fast if unset
 // Danny's (liaison agent's) wallet — receives /copy-review payments.
-// Fail-fast: never silently route danny's revenue to the vibecode seller.
-const copyReviewSellerAccountId = getCopyReviewSellerAccountId();
+// Optional at boot: when unset, /copy-review is disabled (503, no 402
+// advertised) instead of crashing the whole service — /health, /vibecode
+// and the agent card keep working. The fail-fast guard inside
+// getCopyReviewSellerAccountId() still throws if anything ever tries to
+// build copy-review payment terms without a configured account, so
+// danny's revenue can never be silently routed to the vibecode seller.
+const copyReviewSellerAccountId: string | null =
+  process.env.COPY_REVIEW_SELLER_ACCOUNT_ID?.trim() || null;
+if (!copyReviewSellerAccountId) {
+  console.warn(
+    "[copy-review] COPY_REVIEW_SELLER_ACCOUNT_ID not set — /copy-review disabled (503). Set it to enable danny's paid copy review.",
+  );
+}
 // Hot key for danny's 2% treasury forwards. Optional at boot: without it
 // the forward is skipped (reason "operator-key-missing") and danny keeps
 // the full payment — best-effort, never breaks a paid request.
@@ -126,9 +136,12 @@ const auditHook: AfterSettleHook = async (ctx) => {
     endpointLabel: isCopyReview ? "copy-review" : "vibecode",
     // The 2% forward is signed by whoever received the settled payment:
     // danny's key for /copy-review, the SELLER_* env pair for /vibecode.
+    // (A /copy-review payment can only settle when the endpoint is
+    // configured — no 402 is advertised otherwise — so ?? undefined is
+    // unreachable in practice; it only satisfies the type checker.)
     ...(isCopyReview
       ? {
-          operatorAccountId: copyReviewSellerAccountId,
+          operatorAccountId: copyReviewSellerAccountId ?? undefined,
           operatorPrivateKey: copyReviewSellerPrivateKey,
         }
       : {}),
@@ -184,31 +197,36 @@ let routeConfig = buildVibecodeRouteConfig(sellerAccountId, {
 });
 routeConfig.resource = VIBECODE_RESOURCE_URL;
 
-let copyReviewRouteConfig = buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
-  includeHbarRail: hbarRailAvailable(),
-});
-copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
+let copyReviewRouteConfig = copyReviewSellerAccountId
+  ? buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
+      includeHbarRail: hbarRailAvailable(),
+    })
+  : null;
+if (copyReviewRouteConfig) copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
 
 // The payment middleware is rebuilt whenever the price feed refreshes so
 // the 402 always advertises a fresh HBAR-rail price; a delegating wrapper
 // lets the swap happen without restarting the server.
-let paymentMw = paymentMiddleware(
-  { "POST /vibecode": routeConfig, "POST /copy-review": copyReviewRouteConfig },
-  resourceServer,
-);
+function paymentRoutes() {
+  return {
+    "POST /vibecode": routeConfig,
+    ...(copyReviewRouteConfig ? { "POST /copy-review": copyReviewRouteConfig } : {}),
+  };
+}
+let paymentMw = paymentMiddleware(paymentRoutes(), resourceServer);
 function rebuildPayments(): void {
   routeConfig = buildVibecodeRouteConfig(sellerAccountId, {
     includeHbarRail: hbarRailAvailable(),
   });
   routeConfig.resource = VIBECODE_RESOURCE_URL;
-  copyReviewRouteConfig = buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
-    includeHbarRail: hbarRailAvailable(),
-  });
-  copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
-  paymentMw = paymentMiddleware(
-    { "POST /vibecode": routeConfig, "POST /copy-review": copyReviewRouteConfig },
-    resourceServer,
-  );
+  copyReviewRouteConfig = copyReviewSellerAccountId
+    ? buildCopyReviewRouteConfig(copyReviewSellerAccountId, {
+        includeHbarRail: hbarRailAvailable(),
+      })
+    : null;
+  if (copyReviewRouteConfig)
+    copyReviewRouteConfig.resource = COPY_REVIEW_RESOURCE_URL;
+  paymentMw = paymentMiddleware(paymentRoutes(), resourceServer);
   const rate = getActiveRate();
   console.log(
     `[payments] 402 rebuilt: ${priceTinybars()} tinybars (HBAR/USD $${rate.usd}, source=${rate.source})`,
@@ -252,6 +270,7 @@ registerAgentCardRoutes(app, () =>
   buildAgentCard({
     publicUrl: PUBLIC_URL,
     includeHbarRail: hbarRailAvailable(),
+    copyReviewSellerAccountId,
   }),
 );
 
@@ -263,7 +282,11 @@ app.get("/", (_req, res) => {
   res.json({
     service: "Vibecode x402",
     description:
-      "Pay-per-request AI services for Voicescape blockpages. POST { pageJson, instruction } to /vibecode for an AI page edit; POST { pageJson, focus? } to /copy-review for danny the liaison agent's structured copy review. No API keys, no accounts — just an x402 payment per request on the HBAR or USDC rail.",
+      "Pay-per-request AI services for Voicescape blockpages. POST { pageJson, instruction } to /vibecode for an AI page edit" +
+      (copyReviewSellerAccountId
+        ? "; POST { pageJson, focus? } to /copy-review for danny the liaison agent's structured copy review."
+        : ".") +
+      " No API keys, no accounts — just an x402 payment per request on the HBAR or USDC rail.",
     network: NETWORK,
     buyerKeyType:
       "ECDSA (secp256k1) — the x402 buyer tooling does not accept ED25519 keys. See examples/agent-client/README.md for the HashPack workaround.",
@@ -285,7 +308,9 @@ app.get("/", (_req, res) => {
     copyReviewPayTo: copyReviewSellerAccountId,
     facilitator: FACILITATOR_URL,
     feePayer: FEE_PAYER_ACCOUNT,
-    endpoints: ["POST /vibecode", "POST /copy-review"],
+    endpoints: copyReviewSellerAccountId
+      ? ["POST /vibecode", "POST /copy-review"]
+      : ["POST /vibecode"],
     auditTopic: process.env.HCS_TOPIC_ID || "(not configured)",
     docs: "See README.md for the full handshake walkthrough.",
   });
@@ -377,6 +402,16 @@ app.post("/vibecode", async (req, res) => {
 });
 
 app.post("/copy-review", async (req, res) => {
+  // --- Disabled when unconfigured: no 402 is advertised for this route,
+  // so refuse before any payment logic runs (never take money for an
+  // endpoint with nowhere to settle it).
+  if (!copyReviewSellerAccountId) {
+    res.status(503).json({
+      error:
+        "Service unavailable: /copy-review is not configured (COPY_REVIEW_SELLER_ACCOUNT_ID unset). No payment was requested or settled.",
+    });
+    return;
+  }
   // --- Replay hygiene: the payment payload commits to a resource URL.
   // Only honor payments that were minted for THIS endpoint.
   const sigHeader = req.header("PAYMENT-SIGNATURE");
@@ -448,7 +483,11 @@ app.listen(PORT, () => {
   console.log(`  network:     ${NETWORK}`);
   console.log(`  price:       ${getPriceUsdCents()}¢ USD -> ${priceTinybars()} tinybars (HBAR) | ${priceUsdcBaseUnits()} base units (USDC)`);
   console.log(`  payTo:       ${sellerAccountId} (/vibecode)`);
-  console.log(`  payTo:       ${copyReviewSellerAccountId} (/copy-review, danny)`);
+  if (copyReviewSellerAccountId) {
+    console.log(`  payTo:       ${copyReviewSellerAccountId} (/copy-review, danny)`);
+  } else {
+    console.log(`  payTo:       (not configured — /copy-review disabled)`);
+  }
   console.log(`  facilitator: ${FACILITATOR_URL} (feePayer ${FEE_PAYER_ACCOUNT})`);
   console.log(`  resources:   ${VIBECODE_RESOURCE_URL}, ${COPY_REVIEW_RESOURCE_URL}`);
 });
