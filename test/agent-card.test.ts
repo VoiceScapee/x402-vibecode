@@ -65,7 +65,11 @@ function card(includeHbarRail = true): AgentCard {
       HEDERA_NETWORK: undefined,
     },
     () => {
-      c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail });
+      c = buildAgentCard({
+        publicUrl: PUBLIC_URL,
+        includeHbarRail,
+        copyReviewSellerAccountId: DANNY,
+      });
     },
   );
   return c!;
@@ -157,7 +161,11 @@ describe("payment terms match the live 402", () => {
         HEDERA_NETWORK: undefined,
       },
       () => {
-        const c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail: true });
+        const c = buildAgentCard({
+          publicUrl: PUBLIC_URL,
+          includeHbarRail: true,
+          copyReviewSellerAccountId: DANNY,
+        });
         const vibecodeExt = c.capabilities.extensions.find((e) =>
           e.params.serviceEndpoint.endsWith("/vibecode"),
         )!;
@@ -178,7 +186,11 @@ describe("payment terms match the live 402", () => {
         HEDERA_NETWORK: undefined,
       },
       () => {
-        const c = buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail: true });
+        const c = buildAgentCard({
+          publicUrl: PUBLIC_URL,
+          includeHbarRail: true,
+          copyReviewSellerAccountId: DANNY,
+        });
         const reviewExt = c.capabilities.extensions.find((e) =>
           e.params.serviceEndpoint.endsWith("/copy-review"),
         )!;
@@ -199,6 +211,35 @@ describe("payment terms match the live 402", () => {
       assert.ok(!assets.includes(HBAR_ASSET_ID), "HBAR rail must be absent when suspended");
       assert.ok(assets.length >= 1, "USDC rail stays advertised");
     }
+  });
+
+  it("omits the copy-review extension and skill when COPY_REVIEW_SELLER_ACCOUNT_ID is unset", () => {
+    withEnv(
+      {
+        SELLER_ACCOUNT_ID: SELLER,
+        COPY_REVIEW_SELLER_ACCOUNT_ID: undefined,
+        HEDERA_NETWORK: undefined,
+      },
+      () => {
+        const c = buildAgentCard({
+          publicUrl: PUBLIC_URL,
+          includeHbarRail: true,
+          copyReviewSellerAccountId: null,
+        });
+        assert.ok(
+          !c.capabilities.extensions.some((e) => e.params.serviceEndpoint.endsWith("/copy-review")),
+          "copy-review extension must be absent when unconfigured",
+        );
+        assert.ok(
+          !c.skills.some((s) => s.id === "copy-review"),
+          "copy-review skill must be absent when unconfigured",
+        );
+        assert.ok(
+          c.capabilities.extensions.some((e) => e.params.serviceEndpoint.endsWith("/vibecode")),
+          "vibecode extension must remain when copy-review is unconfigured",
+        );
+      },
+    );
   });
 
   it("advertises both rails on both endpoints when the price feed is live", () => {
@@ -226,7 +267,11 @@ describe("well-known HTTP routes", () => {
     delete process.env.HEDERA_NETWORK;
     const app = express();
     registerAgentCardRoutes(app, () =>
-      buildAgentCard({ publicUrl: PUBLIC_URL, includeHbarRail: true }),
+      buildAgentCard({
+        publicUrl: PUBLIC_URL,
+        includeHbarRail: true,
+        copyReviewSellerAccountId: DANNY,
+      }),
     );
     await new Promise<void>((resolve) => {
       server = app.listen(0, () => {
