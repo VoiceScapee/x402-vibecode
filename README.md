@@ -65,7 +65,7 @@ verification, so `/verify` isn't called separately).
 ```bash
 cd x402-vibecode
 npm install
-cp .env.example .env   # then fill in SELLER_ACCOUNT_ID + ANTHROPIC_API_KEY
+cp .env.example .env   # then fill in SELLER_ACCOUNT_ID + an AI key (GROQ_API_KEY is $0)
 ```
 
 ### 1. Try it with zero keys — dry-run demo
@@ -90,7 +90,7 @@ npm run dev   # or: npm run build && npm start
 ```
 
 Needs `SELLER_ACCOUNT_ID` (account on `HEDERA_NETWORK` receiving payments)
-and `ANTHROPIC_API_KEY`. The server syncs with the configured x402 facilitator
+and an AI key (`ANTHROPIC_API_KEY` metered, or `GROQ_API_KEY` on the $0 free tier). The server syncs with the configured x402 facilitator
 on boot (testnet: Blocky402; mainnet: our self-hosted facilitator — see
 FACILITATOR_SHORTLIST.md) and logs the active network loudly at startup
 (`x402 operator client: HEDERA_TESTNET`). Set `HEDERA_NETWORK=mainnet` for
@@ -223,7 +223,9 @@ public feed.
 | `SELLER_ACCOUNT_ID` | yes (server) | Account (on `HEDERA_NETWORK`) receiving /vibecode payments |
 | `COPY_REVIEW_SELLER_ACCOUNT_ID` | yes (server) | Account (on `HEDERA_NETWORK`) receiving /copy-review payments — danny's wallet (0.0.10857765 on mainnet). Fail-fast if unset: danny's revenue must never silently route to the vibecode seller |
 | `COPY_REVIEW_SELLER_PRIVATE_KEY` | no (yes for danny's 2% forward) | Danny's operator private key (any key type); forwards the /copy-review 2% treasury share after settlement. Without it the forward is skipped (`operator-key-missing`) and danny keeps 100% — best-effort, never breaks a paid request. **Hot server key** — same lean-account discipline as `SELLER_PRIVATE_KEY` |
-| `ANTHROPIC_API_KEY` | yes (server, for AI) | Anthropic API key |
+| `ANTHROPIC_API_KEY` | one of the two AI keys (server) | Anthropic API key (metered). Takes precedence when both AI keys are set. |
+| `GROQ_API_KEY` | one of the two AI keys (server) | Groq API key — **$0 free tier** (console.groq.com, no card). Either AI key enables the paid endpoints; with neither set the service fails closed (503, no 402 advertised). |
+| `GROQ_MODEL` | no | Override (default `llama-3.3-70b-versatile`). Groq free-tier mode has $0 AI cost, so the startup price floor does not apply. |
 | `ANTHROPIC_MODEL` | no | Override (default `claude-sonnet-4-5-20250929`). **Price-floor coupling:** sonnet-class models price at $3/$15 per MTok, haiku-class at $1/$5; an unknown model with no explicit rate overrides **refuses to boot** — set `ANTHROPIC_INPUT_USD_PER_MTOK` + `ANTHROPIC_OUTPUT_USD_PER_MTOK` (USD per million tokens, both required). |
 | `ANTHROPIC_INPUT_USD_PER_MTOK` / `ANTHROPIC_OUTPUT_USD_PER_MTOK` | no (yes for unknown models) | Explicit per-MTok rates (USD) for the configured model; override the built-in rate table. Set **both** or neither. |
 | `MAX_INPUT_TOKENS` | no | Worst-case input tokens per request (default `20000` — system prompt ~4k + pageJson + instruction) |
@@ -255,8 +257,9 @@ Two rules are enforced **in code**, not by convention:
    with a loud error naming the model, the floor, and the fix (raise
    `PRICE_USD_CENTS` or use a cheaper model). At defaults (sonnet,
    $0.20/HBAR) the floor is **20¢** — the legacy `1¢` default price will not
-   boot in real AI mode. Mock mode (`$0`, no `ANTHROPIC_API_KEY`) has no AI
-   cost, so the floor does not apply.
+   boot in real AI mode. Mock mode (`$0`, no AI key) has no AI
+   cost, so the floor does not apply — same for Groq free-tier mode
+   (`$0` AI cost).
 2. **Treasury forward skip.** Forwarding the 2% share costs a chain
    transaction. When the share is worth less than 2x
    `FORWARD_FEE_TINYBARS`, the forward is skipped with
@@ -295,7 +298,7 @@ this project is exactly that, end to end:
   facilitator + fee-payer account. (This closed a real bug where
   `HEDERA_NETWORK=mainnet` would have advertised mainnet in the 402 while
   verifying/settling through the testnet facilitator.)
-- **$0 mode:** with no `ANTHROPIC_API_KEY`, the live server serves a clearly
+- **$0 mode:** with no AI key, the live server serves a clearly
   labeled mock edit (`{ mock: true }`) instead of failing after the buyer
   paid — the full x402 payment flow works end to end without spending anything.
 - The live Blocky402 round-trip can't be verified without keys — the

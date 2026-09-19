@@ -28,7 +28,7 @@ import type { AfterSettleHook } from "@x402/core/server";
 import { ExactHederaScheme as ExactHederaServerScheme } from "@x402/hedera/exact/server";
 
 import { isValidPage } from "./schema.js";
-import { vibecode, VibecodeError, reviewCopy, CopyReviewError } from "./anthropic.js";
+import { vibecode, VibecodeError, reviewCopy, CopyReviewError, aiBackend } from "./anthropic.js";
 import { buildAuditEntry, logSettledPayment } from "./audit.js";
 import { forwardTreasuryShare } from "./treasury.js";
 import { hederaNetworkId, hederaNetworkName } from "./network.js";
@@ -241,8 +241,9 @@ startPriceFeed({ onRefresh: () => rebuildPayments() });
 // Fail closed: without an AI backend there is nothing real to deliver, so
 // the paid endpoints must never demand or settle a payment. (The mock
 // server in mock.ts is the only place mock edits/reviews are served — a
-// localhost dry-run.)
-const AI_BACKEND_ENABLED = Boolean(process.env.ANTHROPIC_API_KEY);
+// localhost dry-run.) Either ANTHROPIC_API_KEY or GROQ_API_KEY ($0 free tier)
+// enables the backend.
+const AI_BACKEND_ENABLED = aiBackend() !== null;
 const AI_PAID_ROUTES = new Set(["POST /vibecode", "POST /copy-review"]);
 
 const app = express();
@@ -256,7 +257,7 @@ app.use((req, res, next) => {
     // No 402, no settlement: serving a mock behind a paywall is forbidden.
     res.status(503).json({
       error:
-        "Service unavailable: the AI backend is not configured (ANTHROPIC_API_KEY unset). No payment was requested or settled.",
+        "Service unavailable: the AI backend is not configured (set ANTHROPIC_API_KEY or GROQ_API_KEY). No payment was requested or settled.",
     });
     return;
   }
@@ -331,6 +332,8 @@ app.get("/health", (_req, res) => {
     facilitator: FACILITATOR_URL,
     seller: sellerAccountId,
     anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+    groqConfigured: Boolean(process.env.GROQ_API_KEY),
+    aiBackend: aiBackend(),
   });
 });
 
@@ -381,7 +384,7 @@ app.post("/vibecode", async (req, res) => {
   // serve a mock after the buyer paid.
   if (!AI_BACKEND_ENABLED) {
     console.error(
-      "[vibecode] request reached handler without ANTHROPIC_API_KEY — refusing (never serve a mock behind a paywall)",
+      "[vibecode] request reached handler without an AI backend key — refusing (never serve a mock behind a paywall)",
     );
     res.status(503).json({
       error:
@@ -457,7 +460,7 @@ app.post("/copy-review", async (req, res) => {
   // serve a mock after the buyer paid.
   if (!AI_BACKEND_ENABLED) {
     console.error(
-      "[copy-review] request reached handler without ANTHROPIC_API_KEY — refusing (never serve a mock behind a paywall)",
+      "[copy-review] request reached handler without an AI backend key — refusing (never serve a mock behind a paywall)",
     );
     res.status(503).json({
       error:

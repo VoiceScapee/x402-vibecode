@@ -67,9 +67,17 @@ services:
       #   value: "3"
       # - key: ANTHROPIC_OUTPUT_USD_PER_MTOK
       #   value: "15"
+      # ---- AI backend: Anthropic (metered) or Groq ($0 free tier) ----
+      # Anthropic takes precedence when both keys are set. Either key
+      # enables the paid endpoints; with neither set the service fails
+      # closed (503, no 402 advertised).
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile # override only to pin a different free-tier model
       # ---- secrets: fill in via the Render dashboard (Environment tab) ----
       - key: ANTHROPIC_API_KEY
-        sync: false # required for real AI output; server boots without it (mock mode)
+        sync: false # metered AI; optional when GROQ_API_KEY is set
+      - key: GROQ_API_KEY
+        sync: false # $0 free tier (console.groq.com, no card); enables the AI backend
       - key: SELLER_ACCOUNT_ID
         sync: false # e.g. 0.0.x — receives the settled x402 payments
       - key: SELLER_PRIVATE_KEY

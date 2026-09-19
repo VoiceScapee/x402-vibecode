@@ -12,8 +12,9 @@
  *      and the HCS audit tx fee — all paid by US, not the buyer). The
  *      buyer pays once; if that price can't cover the worst-case AI cost,
  *      the request would lose money, so the server fails LOUDLY at startup
- *      instead of bleeding per-request. Mock ($0) mode — no
- *      ANTHROPIC_API_KEY — has no AI cost, so the floor does not apply.
+ *      instead of bleeding per-request. Mock ($0) mode — neither
+ *      ANTHROPIC_API_KEY nor GROQ_API_KEY — has no AI cost, so the floor
+ *      does not apply. Groq free-tier mode ($0 AI cost) likewise skips it.
  *
  *   2. TREASURY FORWARD SKIP: forwarding the 2% platform share costs a
  *      transaction fee (FORWARD_FEE_TINYBARS). When the share is worth less
@@ -257,10 +258,11 @@ export function computeMinPriceCents(): PriceFloor {
  * Enforce the startup price floor. Call AFTER refreshPriceFeed() and BEFORE
  * building the 402.
  *
- * Always logs the computed floor. When ANTHROPIC_API_KEY is set (real AI
+ * Always logs the computed floor. When ANTHROPIC_API_KEY is set (metered AI
  * mode) and the configured price is below the floor, THROWS — the server
- * refuses to boot rather than sell below cost. In mock ($0) mode the floor
- * does not apply: there is no AI cost to lose.
+ * refuses to boot rather than sell below cost. In mock ($0) mode and in
+ * Groq free-tier ($0 AI cost) mode the floor does not apply: there is no
+ * AI cost to lose.
  */
 export function enforceStartupPriceFloor(): void {
   const floor = computeMinPriceCents(); // throws for unknown model w/o overrides
@@ -270,7 +272,12 @@ export function enforceStartupPriceFloor(): void {
       `operator overhead=${floor.overheadCents}¢)`,
   );
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.log("[economics] no ANTHROPIC_API_KEY — mock ($0) mode, price floor does not apply");
+    const mode = process.env.GROQ_API_KEY
+      ? "Groq free tier ($0)"
+      : "mock ($0)";
+    console.log(
+      `[economics] no ANTHROPIC_API_KEY — ${mode} mode, price floor does not apply`,
+    );
     return;
   }
   const price = getPriceUsdCents();
