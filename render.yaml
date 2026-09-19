@@ -72,7 +72,7 @@ services:
       # enables the paid endpoints; with neither set the service fails
       # closed (503, no 402 advertised).
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile # override only to pin a different free-tier model
+        value: openai/gpt-oss-120b # override only to pin a different free-tier model
       # ---- secrets: fill in via the Render dashboard (Environment tab) ----
       - key: ANTHROPIC_API_KEY
         sync: false # metered AI; optional when GROQ_API_KEY is set
