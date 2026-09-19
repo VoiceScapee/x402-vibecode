@@ -1,19 +1,19 @@
 {
   "dependencies": {
     "@hiero-ledger/sdk": "2.85.0",
+    "@types/express": "4.17.21",
+    "@types/node": "20.14.0",
     "@x402/core": "2.25.0",
     "@x402/express": "2.25.0",
     "@x402/fetch": "2.25.0",
     "@x402/hedera": "2.25.0",
     "dotenv": "16.4.5",
-    "express": "4.19.2"
+    "express": "4.19.2",
+    "typescript": "5.5.4"
   },
   "description": "Pay-per-request AI vibecode API using x402 on Hedera testnet (ETHOnline 2026 \u2014 Hedera x402 agentic payments track)",
   "devDependencies": {
-    "@types/express": "4.17.21",
-    "@types/node": "20.14.0",
-    "tsx": "4.20.5",
-    "typescript": "5.5.4"
+    "tsx": "4.20.5"
   },
   "engines": {
     "node": ">=20"
