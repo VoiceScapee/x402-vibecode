@@ -1,5 +1,5 @@
 /**
- * Anthropic-backed "vibecode" engine.
+ * AI-backed "vibecode" engine (Anthropic or Groq — see aiBackend()).
  *
  * Reuses the Voicescape system prompt (copied from
  * voicescape/frontend/app/api/vibecode/route.ts) that constrains the model
@@ -46,6 +46,141 @@ export { VIBECODE_SYSTEM_PROMPT };
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 export const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
+
+// ---------------------------------------------------------------------------
+// Groq backend ($0 free tier, OpenAI-compatible chat-completions API).
+// Same system prompts and schema validation as the Anthropic path — only the
+// HTTP envelope differs. Anthropic takes precedence when both keys are set.
+// ---------------------------------------------------------------------------
+
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+export const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
+
+export type AiBackend = "anthropic" | "groq";
+
+/** Which AI backend is configured, or null when none is. Anthropic wins ties. */
+export function aiBackend(): AiBackend | null {
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.GROQ_API_KEY) return "groq";
+  return null;
+}
+
+interface ChatCall {
+  systemPrompt: string;
+  userContent: string;
+  maxTokens: number;
+}
+
+/** Raw text completion via the Anthropic Messages API. */
+async function callAnthropic(call: ChatCall): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY as string;
+  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: call.maxTokens,
+        system: call.systemPrompt,
+        messages: [{ role: "user", content: call.userContent }],
+      }),
+    });
+  } catch (e) {
+    throw new Error(
+      `Failed to reach Anthropic API: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Anthropic API error (${res.status}): ${text.slice(0, 500)}`,
+    );
+  }
+
+  const data = (await res.json()) as {
+    content?: { type?: string; text?: string }[];
+  };
+  const textBlock = data.content?.find(
+    (b) => b.type === "text" && typeof b.text === "string",
+  );
+  const raw = (textBlock?.text ?? "").trim();
+  if (!raw) throw new Error("Anthropic returned no text content.");
+  return raw;
+}
+
+/** Raw text completion via Groq's OpenAI-compatible chat-completions API. */
+async function callGroq(call: ChatCall): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY as string;
+  const model = process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL;
+
+  let res: Response;
+  try {
+    res = await fetch(GROQ_API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: call.maxTokens,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: call.systemPrompt },
+          { role: "user", content: call.userContent },
+        ],
+      }),
+    });
+  } catch (e) {
+    throw new Error(
+      `Failed to reach Groq API: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Groq API error (${res.status}): ${text.slice(0, 500)}`);
+  }
+
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  const raw = (data.choices?.[0]?.message?.content ?? "").trim();
+  if (!raw) throw new Error("Groq returned no text content.");
+  return raw;
+}
+
+/**
+ * Run the chat completion against whichever AI backend is configured,
+ * failing closed when none is. Provider errors are re-wrapped in the
+ * caller's typed error so handlers keep their error contracts.
+ */
+async function runChat<TErr extends Error>(
+  call: ChatCall,
+  makeError: (message: string) => TErr,
+): Promise<string> {
+  const backend = aiBackend();
+  if (!backend) {
+    throw makeError(
+      "No AI backend configured — set ANTHROPIC_API_KEY or GROQ_API_KEY.",
+    );
+  }
+  try {
+    return backend === "anthropic"
+      ? await callAnthropic(call)
+      : await callGroq(call);
+  } catch (e) {
+    throw makeError(e instanceof Error ? e.message : String(e));
+  }
+}
 
 export class VibecodeError extends Error {}
 
@@ -123,7 +258,7 @@ Rules:
 export class CopyReviewError extends Error {}
 
 /**
- * Review a blockpage's copy via the Anthropic API. The page is validated
+ * Review a blockpage's copy via the configured AI backend. The page is validated
  * by the caller (the x402 handler); this validates the MODEL's output
  * against the review shape before returning it.
  *
@@ -136,56 +271,15 @@ export async function reviewCopy(
   pageJson: unknown,
   focus?: string,
 ): Promise<CopyReview> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new CopyReviewError(
-      "ANTHROPIC_API_KEY is not set. Add it to the environment to enable the copy-review AI.",
-    );
-  }
-  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-
   const userContent =
     `Blockpage JSON to review:\n${JSON.stringify(pageJson)}\n\n` +
     (focus && focus.trim() ? `Reviewer focus requested: ${focus.trim()}\n\n` : "") +
     `Return the copy review JSON only.`;
 
-  let res: Response;
-  try {
-    res = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 2048,
-        system: COPY_REVIEW_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userContent }],
-      }),
-    });
-  } catch (e) {
-    throw new CopyReviewError(
-      `Failed to reach Anthropic API: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new CopyReviewError(
-      `Anthropic API error (${res.status}): ${text.slice(0, 500)}`,
-    );
-  }
-
-  const data = (await res.json()) as {
-    content?: { type?: string; text?: string }[];
-  };
-  const textBlock = data.content?.find(
-    (b) => b.type === "text" && typeof b.text === "string",
+  const raw = await runChat(
+    { systemPrompt: COPY_REVIEW_SYSTEM_PROMPT, userContent, maxTokens: 2048 },
+    (m) => new CopyReviewError(m),
   );
-  const raw = (textBlock?.text ?? "").trim();
-  if (!raw) throw new CopyReviewError("Anthropic returned no text content.");
 
   let parsed: unknown;
   try {
@@ -206,63 +300,22 @@ export async function reviewCopy(
 }
 
 /**
- * Apply `instruction` to `pageJson` via the Anthropic API.
+ * Apply `instruction` to `pageJson` via the configured AI backend.
  * Throws VibecodeError with a human-readable message on any failure.
  */
 export async function vibecode(
   pageJson: unknown,
   instruction: string,
 ): Promise<VoicescapePage> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new VibecodeError(
-      "ANTHROPIC_API_KEY is not set. Add it to the environment to enable the vibecode AI.",
-    );
-  }
-  const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-
   const userContent =
     `Current page JSON:\n${JSON.stringify(pageJson)}\n\n` +
     `Requested change:\n${instruction}\n\n` +
     `Return the full updated page JSON only.`;
 
-  let res: Response;
-  try {
-    res = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system: VIBECODE_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userContent }],
-      }),
-    });
-  } catch (e) {
-    throw new VibecodeError(
-      `Failed to reach Anthropic API: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new VibecodeError(
-      `Anthropic API error (${res.status}): ${text.slice(0, 500)}`,
-    );
-  }
-
-  const data = (await res.json()) as {
-    content?: { type?: string; text?: string }[];
-  };
-  const textBlock = data.content?.find(
-    (b) => b.type === "text" && typeof b.text === "string",
+  const raw = await runChat(
+    { systemPrompt: VIBECODE_SYSTEM_PROMPT, userContent, maxTokens: 4096 },
+    (m) => new VibecodeError(m),
   );
-  const raw = (textBlock?.text ?? "").trim();
-  if (!raw) throw new VibecodeError("Anthropic returned no text content.");
 
   let parsed: unknown;
   try {
