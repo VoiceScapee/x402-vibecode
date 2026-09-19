@@ -225,7 +225,7 @@ public feed.
 | `COPY_REVIEW_SELLER_PRIVATE_KEY` | no (yes for danny's 2% forward) | Danny's operator private key (any key type); forwards the /copy-review 2% treasury share after settlement. Without it the forward is skipped (`operator-key-missing`) and danny keeps 100% — best-effort, never breaks a paid request. **Hot server key** — same lean-account discipline as `SELLER_PRIVATE_KEY` |
 | `ANTHROPIC_API_KEY` | one of the two AI keys (server) | Anthropic API key (metered). Takes precedence when both AI keys are set. |
 | `GROQ_API_KEY` | one of the two AI keys (server) | Groq API key — **$0 free tier** (console.groq.com, no card). Either AI key enables the paid endpoints; with neither set the service fails closed (503, no 402 advertised). |
-| `GROQ_MODEL` | no | Override (default `llama-3.3-70b-versatile`). Groq free-tier mode has $0 AI cost, so the startup price floor does not apply. |
+| `GROQ_MODEL` | no | Override (default `openai/gpt-oss-120b`). Groq free-tier mode has $0 AI cost, so the startup price floor does not apply. |
 | `ANTHROPIC_MODEL` | no | Override (default `claude-sonnet-4-5-20250929`). **Price-floor coupling:** sonnet-class models price at $3/$15 per MTok, haiku-class at $1/$5; an unknown model with no explicit rate overrides **refuses to boot** — set `ANTHROPIC_INPUT_USD_PER_MTOK` + `ANTHROPIC_OUTPUT_USD_PER_MTOK` (USD per million tokens, both required). |
 | `ANTHROPIC_INPUT_USD_PER_MTOK` / `ANTHROPIC_OUTPUT_USD_PER_MTOK` | no (yes for unknown models) | Explicit per-MTok rates (USD) for the configured model; override the built-in rate table. Set **both** or neither. |
 | `MAX_INPUT_TOKENS` | no | Worst-case input tokens per request (default `20000` — system prompt ~4k + pageJson + instruction) |

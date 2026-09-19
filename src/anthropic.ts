@@ -54,7 +54,7 @@ export const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 // ---------------------------------------------------------------------------
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-export const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
 export type AiBackend = "anthropic" | "groq";
 
