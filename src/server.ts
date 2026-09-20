@@ -247,6 +247,28 @@ const AI_BACKEND_ENABLED = aiBackend() !== null;
 const AI_PAID_ROUTES = new Set(["POST /vibecode", "POST /copy-review"]);
 
 const app = express();
+
+// CORS: the dapp builder (and any agent client) calls /vibecode cross-origin
+// from the browser. Without these headers the browser blocks reading the 402
+// probe (PAYMENT-REQUIRED) and the settle receipt (PAYMENT-RESPONSE), and the
+// builder's pay-per-edit UI fails with "Failed to fetch". Placed first so it
+// also covers 402s emitted by the x402 middleware. No credentials are used by
+// the x402 flow, so a wildcard origin is safe here.
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, PAYMENT-SIGNATURE");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "PAYMENT-REQUIRED, PAYMENT-RESPONSE",
+  );
+  res.setHeader("Access-Control-Max-Age", "86400");
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
 app.use(express.json({ limit: "256kb" }));
 
 // The payment middleware protects only the routes in the config map;
