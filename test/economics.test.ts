@@ -59,15 +59,15 @@ function freshEnv(): Map<string, string | undefined> {
 }
 
 describe("startup price floor math", () => {
-  it("computes a 20¢ floor for the sonnet default at defaults (refuses the 1¢ default price)", () => {
+  it("computes a 16¢ floor for the sonnet default at defaults (refuses the 1¢ default price)", () => {
     const saved = freshEnv();
     try {
       const floor = computeMinPriceCents();
-      // worst-case AI: (20000×$3 + 4096×$15)/1e6 × 1.5 = $0.18216 → ceil 19¢
-      assert.equal(floor.aiCostCents, 19n);
+      // worst-case AI: (12000×$3 + 4096×$15)/1e6 × 1.5 = $0.14616 → ceil 15¢
+      assert.equal(floor.aiCostCents, 15n);
       // overhead: 0.01 HBAR @ $0.20 = $0.002 → ceil 1¢
       assert.equal(floor.overheadCents, 1n);
-      assert.equal(floor.floorCents, 20n);
+      assert.equal(floor.floorCents, 16n);
       assert.ok(floor.floorCents > 1n, "floor must exceed the default $0.01 price");
     } finally {
       restoreEnv(saved);
@@ -79,7 +79,7 @@ describe("startup price floor math", () => {
     try {
       process.env.MAX_OUTPUT_TOKENS = "8192";
       const floor = computeMinPriceCents();
-      assert.ok(floor.floorCents > 20n);
+      assert.ok(floor.floorCents > 16n);
     } finally {
       restoreEnv(saved);
     }
@@ -90,10 +90,10 @@ describe("startup price floor math", () => {
     try {
       process.env.ANTHROPIC_MODEL = "claude-haiku-4-5-20250929";
       const floor = computeMinPriceCents();
-      // worst-case AI: (20000×$1 + 4096×$5)/1e6 × 1.5 = $0.06072 → ceil 7¢, +1¢ overhead = 8¢
-      assert.equal(floor.aiCostCents, 7n);
-      assert.equal(floor.floorCents, 8n);
-      assert.ok(floor.floorCents < 20n);
+      // worst-case AI: (12000×$1 + 4096×$5)/1e6 × 1.5 = $0.04872 → ceil 5¢, +1¢ overhead = 6¢
+      assert.equal(floor.aiCostCents, 5n);
+      assert.equal(floor.floorCents, 6n);
+      assert.ok(floor.floorCents < 16n);
     } finally {
       restoreEnv(saved);
     }
@@ -105,7 +105,7 @@ describe("startup price floor math", () => {
       process.env.ANTHROPIC_INPUT_USD_PER_MTOK = "0.25";
       process.env.ANTHROPIC_OUTPUT_USD_PER_MTOK = "1.25";
       const floor = computeMinPriceCents();
-      // (20000×$0.25 + 4096×$1.25)/1e6 × 1.5 = $0.01518 → ceil 2¢, +1¢ = 3¢
+      // (12000×$0.25 + 4096×$1.25)/1e6 × 1.5 = $0.01218 → ceil 2¢, +1¢ = 3¢
       assert.equal(floor.floorCents, 3n);
     } finally {
       restoreEnv(saved);

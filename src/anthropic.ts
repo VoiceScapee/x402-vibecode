@@ -44,6 +44,72 @@ Rules:
 
 export { VIBECODE_SYSTEM_PROMPT };
 
+// ---------------------------------------------------------------------------
+// Input budget caps (prompt compression, 2026-09-30).
+//
+// The worst-case input budget in economics.ts prices pageJson + instruction.
+// These hard caps make that worst case REAL: anything bigger is rejected
+// BEFORE the AI is called (buyer gets a 400-class error, never a silent
+// truncation), so the floor can be computed on the capped size instead of an
+// unbounded guess. Token estimates use ~4 chars per token.
+// ---------------------------------------------------------------------------
+
+/** Max pageJson size: 32k chars ≈ 8k tokens. */
+export const MAX_PAGE_JSON_CHARS = 32_000;
+/** Max instruction/focus size: 4k chars ≈ 1k tokens. */
+export const MAX_INSTRUCTION_CHARS = 4_000;
+
+/**
+ * Reject inputs that exceed the priced input budget. Throws via makeError
+ * (VibecodeError for /vibecode, CopyReviewError for /copy-review — each
+ * endpoint keeps its error contract). Surfaced as a client error by the
+ * caller, never a charge for a request we refuse to run.
+ */
+export function assertVibecodeInputBounds(
+  pageJson: unknown,
+  instruction: string,
+  makeError: (message: string) => Error = (m) => new VibecodeError(m),
+): void {
+  const pageChars = JSON.stringify(pageJson ?? "").length;
+  if (pageChars > MAX_PAGE_JSON_CHARS) {
+    throw makeError(
+      `pageJson is too large (${pageChars} chars, max ${MAX_PAGE_JSON_CHARS}). ` +
+        `Split the page into smaller edits and try again.`,
+    );
+  }
+  if (instruction.length > MAX_INSTRUCTION_CHARS) {
+    throw makeError(
+      `instruction is too long (${instruction.length} chars, max ${MAX_INSTRUCTION_CHARS}). ` +
+        `Shorten the requested change and try again.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic output cap (prompt compression, 2026-09-30).
+//
+// Output tokens are the expensive half of the worst case ($15/MTok on the
+// default model). The model must return the FULL updated page JSON, so the
+// cap scales with the page being edited: 2× the page's token size plus
+// headroom for the change itself, clamped to [1024, 4096]. Typical pages
+// land far below the 4096 absolute max — the startup floor still prices the
+// 4096 worst case, so the realized margin grows without weakening the
+// never-lose-money guarantee.
+// ---------------------------------------------------------------------------
+
+const MIN_VIBECODE_OUTPUT_TOKENS = 1024;
+const MAX_VIBECODE_OUTPUT_TOKENS = 4096;
+
+/** Per-request max_tokens for a vibecode edit of the given page. Pure. */
+export function vibecodeMaxTokens(pageJson: unknown): number {
+  const pageTokens = Math.ceil(JSON.stringify(pageJson ?? "").length / 4);
+  const scaled = pageTokens * 2 + 256;
+  return Math.min(
+    MAX_VIBECODE_OUTPUT_TOKENS,
+    Math.max(MIN_VIBECODE_OUTPUT_TOKENS, scaled),
+  );
+}
+
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 export const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
 
@@ -88,7 +154,18 @@ async function callAnthropic(call: ChatCall): Promise<string> {
       body: JSON.stringify({
         model,
         max_tokens: call.maxTokens,
-        system: call.systemPrompt,
+        // Prompt caching (2026-09-30): the system prompt is byte-identical on
+        // every call, so mark it as an explicit cache breakpoint. Repeat
+        // requests inside the TTL window pay the cached-input rate on this
+        // prefix (~10% of base) instead of full price. Groq's path needs no
+        // marker — its prefix caching is automatic.
+        system: [
+          {
+            type: "text",
+            text: call.systemPrompt,
+            cache_control: { type: "ephemeral" },
+          },
+        ],
         messages: [{ role: "user", content: call.userContent }],
       }),
     });
@@ -271,6 +348,7 @@ export async function reviewCopy(
   pageJson: unknown,
   focus?: string,
 ): Promise<CopyReview> {
+  assertVibecodeInputBounds(pageJson, focus ?? "", (m) => new CopyReviewError(m));
   const userContent =
     `Blockpage JSON to review:\n${JSON.stringify(pageJson)}\n\n` +
     (focus && focus.trim() ? `Reviewer focus requested: ${focus.trim()}\n\n` : "") +
@@ -307,13 +385,18 @@ export async function vibecode(
   pageJson: unknown,
   instruction: string,
 ): Promise<VoicescapePage> {
+  assertVibecodeInputBounds(pageJson, instruction);
   const userContent =
     `Current page JSON:\n${JSON.stringify(pageJson)}\n\n` +
     `Requested change:\n${instruction}\n\n` +
     `Return the full updated page JSON only.`;
 
   const raw = await runChat(
-    { systemPrompt: VIBECODE_SYSTEM_PROMPT, userContent, maxTokens: 4096 },
+    {
+      systemPrompt: VIBECODE_SYSTEM_PROMPT,
+      userContent,
+      maxTokens: vibecodeMaxTokens(pageJson),
+    },
     (m) => new VibecodeError(m),
   );
 

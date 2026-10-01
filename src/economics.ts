@@ -142,8 +142,16 @@ export function resolveModelRates(model: string): ModelRates {
 // Worst-case token budget
 // ---------------------------------------------------------------------------
 
-/** Worst-case input tokens per request: system prompt (~4k) + pageJson + instruction. */
-export const DEFAULT_MAX_INPUT_TOKENS = 20_000n;
+/**
+ * Worst-case input tokens per request. Priced on the REAL worst case, not a
+ * guess: src/anthropic.ts enforces MAX_PAGE_JSON_CHARS (32k ≈ 8k tokens) and
+ * MAX_INSTRUCTION_CHARS (4k ≈ 1k tokens) before any AI call, so the true
+ * ceiling is system prompt (~0.6k) + page (~8k) + instruction (~1k) ≈ 9.6k —
+ * this 12k budget keeps ~25% headroom above it. Lowering this number is only
+ * honest because the caps are enforced in code; an unenforced budget cut
+ * would be a lie that lets a big request lose money.
+ */
+export const DEFAULT_MAX_INPUT_TOKENS = 12_000n;
 
 /** Worst-case output tokens per request: matches the max_tokens param in src/anthropic.ts. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 4096n;
